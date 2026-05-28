@@ -1,0 +1,13 @@
+[project]
+name = "nemweb-ingest"
+version = "0.1.0"
+description = "Daily ingestion of AEMO NEMWEB forecast and actual files for the NEMWEB forecast tracker."
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.32",
+    "pandas>=2.2",
+    "python-dateutil>=2.9",
+]
+
+[tool.uv]
+package = false
