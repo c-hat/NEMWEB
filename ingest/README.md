@@ -91,10 +91,16 @@ uv run python ../tests/fixtures/generate_fixtures.py
 
 ## Real-data validation
 
-The sandbox can't reach `nemweb.com.au`, so live validation runs on GitHub. The
-`ingest` workflow (`.github/workflows/ingest.yml`, `workflow_dispatch`) fetches a
-real day and commits the JSON to `public/data/`. See `../FLAGS.md` for AEMO
-conventions to confirm on that first run.
+Validated end-to-end against the live site for trading day 2026-05-28: all five
+regions return 48/48 non-null intervals (demand and rooftop, forecast and
+actual) with no POE band-ordering violations. This surfaced and fixed one real
+bug — the directory-index parser dropped NEMWEB's absolute-path hrefs. See
+`../FLAGS.md` for the full validation record and the one remaining product
+decision (16:00 vs 17:00 day-ahead snapshot).
+
+The `ingest` workflow (`.github/workflows/ingest.yml`, `workflow_dispatch`)
+fetches a real day on a GitHub runner and commits the JSON to `public/data/`;
+it's the path used to populate data in CI.
 
 ## Known limitations
 
@@ -103,6 +109,7 @@ conventions to confirm on that first run.
   files have rolled off are skipped with a warning. No `ARCHIVE/` fallback.
 - Snapshot pick falls back to the latest forecast issued before D-1 17:00 AEST
   if the exact 16:00 file is missing (per the project brief).
-- Several AEMO naming/column conventions are assumed from the docs and should be
-  confirmed against the first real Action run — notably the rooftop POE band
-  orientation (`poe10 ← POWERPOEHIGH`). See `../FLAGS.md`.
+- AEMO naming/column conventions (including the rooftop POE band orientation,
+  `poe10 ← POWERPOEHIGH`) have been confirmed against live data; see
+  `../FLAGS.md`. The only open item is whether the day-ahead reference should be
+  the 16:00- or 17:00-stamped forecast run.

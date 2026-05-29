@@ -16,14 +16,18 @@ import io
 import logging
 import os
 import re
+import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Iterable, Protocol
+from urllib.parse import urljoin
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 log = logging.getLogger(__name__)
@@ -40,6 +44,16 @@ _HREF_RE = re.compile(r'<a\s+href="([^"?][^"]*)"', re.IGNORECASE)
 
 USER_AGENT = "nemweb-forecast-tracker/0.1 (+https://github.com/c-hat/nemweb)"
 
+# A full day's backfill is ~150-200 small requests against NEMWEB; running
+# several days back-to-back trips the site's sliding-window rate limit, which
+# surfaces as a 403 (escalating to 403 even on directory listings). We stay
+# under it with a small inter-request delay and recover from any limiting we do
+# hit with bounded exponential backoff. Both are tunable via env vars so the
+# fixture-driven tests (which never touch the network) are unaffected.
+THROTTLE_SECONDS = float(os.environ.get("NEMWEB_THROTTLE_SECONDS", "0.3"))
+MAX_RETRIES = int(os.environ.get("NEMWEB_MAX_RETRIES", "6"))
+_RETRY_STATUSES = frozenset({403, 429, 500, 502, 503, 504})
+
 
 @dataclass(frozen=True)
 class DirectoryEntry:
@@ -51,7 +65,27 @@ class DirectoryEntry:
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers["User-Agent"] = USER_AGENT
+    retry = Retry(
+        total=MAX_RETRIES,
+        backoff_factor=1.0,  # waits ~0.5, 1, 2, 4, 8, 16s between attempts
+        status_forcelist=sorted(_RETRY_STATUSES),
+        allowed_methods=frozenset({"GET"}),
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
     return s
+
+
+def _get(session: requests.Session, url: str, timeout: int) -> requests.Response:
+    """GET with a polite inter-request delay; retries/backoff live on the adapter."""
+    if THROTTLE_SECONDS:
+        time.sleep(THROTTLE_SECONDS)
+    resp = session.get(url, timeout=timeout)
+    resp.raise_for_status()
+    return resp
 
 
 def parse_filename_timestamp(filename: str) -> datetime | None:
@@ -70,41 +104,54 @@ def parse_filename_timestamp(filename: str) -> datetime | None:
         return None
 
 
-def list_directory(url: str, session: requests.Session | None = None) -> list[DirectoryEntry]:
-    """List a NEMWEB Apache-style directory index.
+def parse_directory_listing(html: str, base_url: str) -> list[DirectoryEntry]:
+    """Parse an Apache-style directory index into data-file entries.
 
-    Returns entries whose filenames look like data files (currently: end in .zip
-    or .ZIP). Subdirectories and the parent link are filtered out.
+    NEMWEB links files by *absolute* path with mixed casing, e.g.
+    ``<A HREF="/Reports/CURRENT/.../FILE.zip">``. We resolve each href against
+    ``base_url`` and take the basename as the filename. Subdirectory links,
+    column-sort links (``?C=...``) and non-zip files are skipped. This is the
+    pure, network-free core of :func:`list_directory`.
     """
-    s = session or _session()
-    if not url.endswith("/"):
-        url = url + "/"
-    resp = s.get(url, timeout=60)
-    resp.raise_for_status()
+    if not base_url.endswith("/"):
+        base_url = base_url + "/"
     entries: list[DirectoryEntry] = []
     seen: set[str] = set()
-    for href in _HREF_RE.findall(resp.text):
+    for href in _HREF_RE.findall(html):
         if href in seen:
             continue
         seen.add(href)
-        if href.endswith("/") or href.startswith("?") or href.startswith("/"):
+        if href.endswith("/") or href.startswith("?"):
             continue
-        if not href.lower().endswith(".zip"):
+        filename = href.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+        if not filename.lower().endswith(".zip"):
             continue
         entries.append(
             DirectoryEntry(
-                filename=href,
-                url=url + href,
-                timestamp=parse_filename_timestamp(href),
+                filename=filename,
+                url=urljoin(base_url, href),
+                timestamp=parse_filename_timestamp(filename),
             )
         )
     return entries
 
 
+def list_directory(url: str, session: requests.Session | None = None) -> list[DirectoryEntry]:
+    """List a NEMWEB Apache-style directory index.
+
+    Returns entries whose filenames look like data files (currently: end in
+    .zip or .ZIP). Subdirectories and the parent link are filtered out.
+    """
+    s = session or _session()
+    if not url.endswith("/"):
+        url = url + "/"
+    resp = _get(s, url, timeout=60)
+    return parse_directory_listing(resp.text, url)
+
+
 def download_zip(url: str, session: requests.Session | None = None) -> bytes:
     s = session or _session()
-    resp = s.get(url, timeout=180)
-    resp.raise_for_status()
+    resp = _get(s, url, timeout=180)
     return resp.content
 
 

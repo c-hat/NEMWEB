@@ -1,73 +1,104 @@
-# AEMO convention flags — to confirm on the first real Action run
+# AEMO convention flags — validated against live data (2026-05-29)
 
-The sandbox can't reach `nemweb.com.au` (egress blocked; allowlist request stuck,
-likely bug #19087), so the ingest module was built and tested against synthetic
-fixtures that follow the *documented* AEMO MMS schema. The items below are places
-where the docs are ambiguous or where the brief and the MMS naming disagree. None
-are blocking — the pipeline runs end-to-end on fixtures — but each should be
-eyeballed against real output from the first `ingest` workflow run before we build
-the frontend (Phase 3).
+These items were originally assumptions baked into the ingest while the sandbox
+couldn't reach `nemweb.com.au`. The environment can now reach the live site, so
+each was checked end-to-end against real NEMWEB output (trading day **D =
+2026-05-28**, forecast snapshot issued D-1). Result: **one real bug found and
+fixed** (directory listing); every documented convention confirmed except the
+16:00-vs-17:00 snapshot choice (#3), which is a product decision left open.
 
-## 1. Rooftop POE band orientation (most important)
+Validation method: the live ingest builds a full day with **48/48 non-null
+intervals for all five regions**, both demand and rooftop, forecast and actual,
+with zero `poe10 ≥ poe50 ≥ poe90` band-ordering violations.
 
-`OPERATIONAL_DEMAND` forecast has explicit `..._POE10/_POE50/_POE90` columns, so
-demand maps cleanly: `poe10` = high band (exceeded ~10% of the time).
+## 0. Directory listing — REAL BUG, FIXED
 
-`ROOFTOP_PV` forecast instead exposes `POWERPOELOW / POWERPOE50 / POWERPOEHIGH`.
-To keep one consistent meaning across both series, the ingest maps:
+NEMWEB's Apache index links files by **absolute, upper-cased path**, e.g.
 
-- `poe10` ← `POWERPOEHIGH`  (high generation ≈ 10% exceedance)
-- `poe90` ← `POWERPOELOW`   (low generation ≈ 90% exceedance)
+    <A HREF="/Reports/CURRENT/Operational_Demand/ACTUAL_HH/PUBLIC_..._202605280000_....zip">
 
-This is the opposite of how the original Phase 1 code wired it (it had
-`poe10 ← POWERPOELOW`). **Confirm against real data** that `POWERPOEHIGH` is in
-fact the high-generation / low-exceedance bound. If AEMO's semantics differ, swap
-the two lines in `ingest.py` (`fetch`/`build_day_payload`, rooftop block).
+The original `list_directory` skipped any href starting with `/`, so against the
+live site it returned an **empty list** for every report directory — the ingest
+could not have fetched anything. The fixtures never caught this because
+`LocalSource` lists files from disk and bypasses the HTML parser entirely.
 
-## 2. Report / table naming
+Fixed in `nemweb.py`: hrefs are now resolved against the directory URL
+(`urljoin`) and the filename taken as the basename; `?C=...` sort links and the
+parent-directory link are still ignored. A network-free regression test
+(`test_parse_directory_listing_absolute_hrefs`) now covers the real markup.
 
-The brief refers to `DEMANDOPERATIONALFORECAST` / `DEMANDOPERATIONALACTUAL`. The
-live MMS reports are the `OPERATIONAL_DEMAND` report family with `FORECAST_HH` and
-`ACTUAL_HH` tables, under:
+## 1. Rooftop POE band orientation — CONFIRMED CORRECT
 
-- `Reports/Current/Operational_Demand/FORECAST_HH/`
-- `Reports/Current/Operational_Demand/ACTUAL_HH/`
+Real `ROOFTOP_PV` forecast rows satisfy
+`POWERPOELOW < POWERPOE50 < POWERPOEHIGH` (e.g. NSW1 midday 925 < 1365 < 1981),
+so `POWERPOEHIGH` is the high-generation bound. The mapping is correct:
 
-The ingest matches tables by **column presence** (`OPERATIONAL_DEMAND_POE50`,
-`OPERATIONAL_DEMAND`, `POWERPOE50`, `POWER`+`TYPE`) rather than by table name, so
-either naming works. Confirm the real directory paths and table names match.
+- `poe10` ← `POWERPOEHIGH`  (high generation, ~10% exceedance)
+- `poe90` ← `POWERPOELOW`   (low generation, ~90% exceedance)
 
-## 3. The "16:00" day-ahead snapshot
+This keeps one consistent meaning across demand and rooftop (`poe10` = high
+band). Zero band-ordering violations across the validated day. No change needed.
 
-Operational-demand and rooftop forecasts publish frequently, not just at 16:00.
-We pick the latest snapshot issued **at or before D-1 17:00 AEST** (so a missing
-16:00 file falls back to the most recent earlier one). Confirm 16:00-ish is the
-intended day-ahead reference, and that the chosen file actually spans all of D.
+## 2. Report / table naming — CONFIRMED
 
-## 4. TAS1 rooftop PV
+Live report families, tables and the `Reports/Current/...` paths all match. The
+ingest matches tables by **column presence**, which lines up with the real I-row
+headers:
 
-The brief lists TAS1 as a possible "region with no rooftop PV". In reality TAS1
-*does* report rooftop PV in the AEMO `ROOFTOP_PV` reports. The pipeline handles a
-genuinely-absent region by emitting all-null series (tested via fixtures that omit
-TAS1), but on real data TAS1 rooftop will almost certainly be populated. Confirm.
+| series          | dir                                          | table key                   | key columns                                            |
+|-----------------|----------------------------------------------|-----------------------------|--------------------------------------------------------|
+| demand forecast | `Operational_Demand/FORECAST_HH`             | `OPERATIONAL_DEMAND_FORECAST` | `OPERATIONAL_DEMAND_POE10/50/90`, `REGIONID`, `INTERVAL_DATETIME` |
+| demand actual   | `Operational_Demand/ACTUAL_HH`               | `OPERATIONAL_DEMAND_ACTUAL`   | `OPERATIONAL_DEMAND`, `INTERVAL_DATETIME`              |
+| rooftop forecast| `ROOFTOP_PV/FORECAST`                         | `ROOFTOP_FORECAST`            | `POWERPOE50`, `POWERPOELOW`, `POWERPOEHIGH`, `REGIONID`|
+| rooftop actual  | `ROOFTOP_PV/ACTUAL`                           | `ROOFTOP_ACTUAL`              | `POWER`, `TYPE`, `REGIONID`, `INTERVAL_DATETIME`       |
 
-## 5. ACTUAL_HH → trading-day assignment
+Live filenames carry two stamps, `PUBLIC_<report>_<run YYYYMMDDHHMM>_<generated
+YYYYMMDDHHMMSS>.zip`; `parse_filename_timestamp` reads the first (run time),
+which is what the snapshot picker keys on.
 
-We collect every `ACTUAL_HH` / `ROOFTOP_PV/ACTUAL` file whose **filename
-timestamp** falls in `[D 00:00, D+1 06:00)` (the +6h slop catches the late
-publish run carrying the interval-ending-00:00 slot that straddles midnight).
-This relies on filename time, not file contents. Confirm there isn't instead a
-single consolidated daily file, and that interval-ending 00:00 belongs to D
-(not D+1) as we assume.
+## 3. The "16:00" day-ahead snapshot — OPEN DECISION (no bug)
 
-## 6. Interval convention & time zone
+Operational-demand and rooftop forecasts publish **every 30 minutes**; there is
+no special 16:00 file. The picker takes the latest run stamped at or before
+**D-1 17:00 AEST**, which on real data selects the **17:00-stamped** run — note
+that run was *generated* at 16:32, so in generation-time terms it is ~the 16:30
+snapshot. A single forecast run spans ~8 days ahead, so it fully covers D
+(48/48 intervals confirmed).
 
-- Intervals are treated as **interval-ending**, 48 per day: 00:30 … 24:00 (= next
-  day 00:00). Confirm AEMO's ending-vs-beginning convention.
-- AEST is fixed at +10:00 (no daylight saving), matching AEMO's publication zone.
+**Decision to confirm:** is the 17:00-stamped run (generated ~16:30) the
+intended day-ahead reference, or should the cutoff be D-1 16:00 to pick the
+16:00-stamped run (generated ~15:30)? To switch, change `_forecast_cutoff` in
+`ingest.py` from `-7h` (17:00) to `-8h` (16:00).
+
+## 4. TAS1 rooftop PV — CONFIRMED present
+
+TAS1 reports rooftop PV in the live `ROOFTOP_PV` reports (48/48 forecast and
+actual intervals on the validated day). The all-null path for a genuinely-absent
+region remains tested via fixtures, but does not trigger on real TAS1 data.
+
+## 5. ACTUAL_HH → trading-day assignment — CONFIRMED
+
+There is **no consolidated daily file**: each `ACTUAL_HH` file carries a single
+half-hour interval (5 rows, one per region) and is published every 30 minutes.
+Collecting every file whose **filename timestamp** falls in `[D 00:00, D+1
+06:00)` and projecting onto the 48-interval grid assembles exactly 48 intervals.
+The interval-ending-00:00 slot (stamped `D+1 00:00`) lands on D's last grid slot
+as assumed; files outside D's grid (the +6h slop, and the stray D-00:00 file)
+project to nothing and are harmlessly ignored.
+
+## 6. Interval convention & time zone — CONFIRMED
+
+- Intervals are **interval-ending**, 48 per day (00:30 … 24:00 = next day
+  00:00). The 48/48 coverage with no off-by-one gap confirms the
+  ending-vs-beginning convention.
+- AEST fixed at +10:00 (no daylight saving), matching AEMO's publication zone.
   Known prototype limitation; revisit if we ever localise display times.
 
-## 7. Exact actual column names
+## 7. Exact actual column names — CONFIRMED
 
-Demand actual is read from the `OPERATIONAL_DEMAND` column. Confirm there isn't a
-preferred adjusted variant (e.g. an operational-vs-adjusted column) we should use.
+Demand actual is read from `OPERATIONAL_DEMAND`. The live actual table also
+carries `OPERATIONAL_DEMAND_ADJUSTMENT` and `WDR_ESTIMATE`; we deliberately use
+the unadjusted `OPERATIONAL_DEMAND`. Rooftop actual uses `POWER` with
+`TYPE=MEASUREMENT` rows kept and `TYPE=SATELLITE` dropped (the live site
+publishes MEASUREMENT and SATELLITE as separate files; the `TYPE` filter handles
+both).

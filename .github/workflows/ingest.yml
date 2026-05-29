@@ -1,9 +1,8 @@
 name: ingest
 
 # Real-world ingestion: fetch live AEMO NEMWEB data and commit the resulting
-# JSON to public/data/. This is the project's real-world validation step --
-# the sandbox can't reach nemweb.com.au, so GitHub-hosted runners do the live
-# fetch instead.
+# JSON to public/data/. Runs the live fetch on a GitHub-hosted runner and
+# commits the day's JSON so the static frontend has real data to render.
 #
 # Trigger manually from the Actions tab (workflow_dispatch). It will use the
 # live NEMWEB site by default (no --source, so NEMWEB_SOURCE/default applies).
