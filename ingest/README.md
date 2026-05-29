@@ -18,7 +18,23 @@ uv run python ingest.py --backfill 30
 
 # Custom output directory
 uv run python ingest.py --date 2026-05-27 --out ../public/data
+
+# Run against local fixtures instead of the live site (no network)
+uv run python ingest.py --date 2026-05-28 --source ../tests/fixtures/nemweb
 ```
+
+## Data source
+
+The ingest only talks to a `Source`, so the **same code path** runs against the
+live site and against local fixtures:
+
+- default: the live NEMWEB site (`https://nemweb.com.au`)
+- `--source <path>` or `NEMWEB_SOURCE=<path>`: a local directory mirroring the
+  NEMWEB layout (used by the tests)
+- `--source https://…`: any HTTP(S) mirror
+
+A spec starting with `http://`/`https://` is an HTTP base URL; anything else is a
+local fixture directory.
 
 ## What it produces
 
@@ -48,11 +64,37 @@ emitted as `null` rather than dropping the slot.
 ## Tests
 
 ```bash
-uv run python test_parser.py
+# Everything (parser unit tests + end-to-end ingest against fixtures)
+uv run python -m pytest -q
+
+# Or run the suites directly, no pytest needed:
+uv run python test_parser.py            # parser / picker / projection units
+uv run python ../tests/test_ingest.py   # full ingest pipeline vs fixtures
 ```
 
-Fixture-driven smoke tests of the AEMO MMS CSV parser, snapshot picker, and
-per-region series projection. No network.
+No network. The end-to-end tests run the real ingest pipeline through a
+`LocalSource` pointed at `../tests/fixtures/nemweb`, and cover the documented
+edge cases:
+
+- missing 16:00 forecast snapshot → falls back to the latest before D-1 17:00
+- a region absent from the rooftop reports → all-null rooftop series (TAS1)
+- the half-hour interval straddling midnight (interval-ending 00:00)
+- a genuinely missing actual interval → `null`
+- `TYPE=SATELLITE` rooftop rows filtered out in favour of `MEASUREMENT`
+
+Fixtures are plain CSVs (reviewable in git) generated deterministically by
+`../tests/fixtures/generate_fixtures.py`. Regenerate with:
+
+```bash
+uv run python ../tests/fixtures/generate_fixtures.py
+```
+
+## Real-data validation
+
+The sandbox can't reach `nemweb.com.au`, so live validation runs on GitHub. The
+`ingest` workflow (`.github/workflows/ingest.yml`, `workflow_dispatch`) fetches a
+real day and commits the JSON to `public/data/`. See `../FLAGS.md` for AEMO
+conventions to confirm on that first run.
 
 ## Known limitations
 
@@ -61,3 +103,6 @@ per-region series projection. No network.
   files have rolled off are skipped with a warning. No `ARCHIVE/` fallback.
 - Snapshot pick falls back to the latest forecast issued before D-1 17:00 AEST
   if the exact 16:00 file is missing (per the project brief).
+- Several AEMO naming/column conventions are assumed from the docs and should be
+  confirmed against the first real Action run — notably the rooftop POE band
+  orientation (`poe10 ← POWERPOEHIGH`). See `../FLAGS.md`.
