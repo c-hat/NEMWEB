@@ -16,6 +16,7 @@ import io
 import logging
 import os
 import re
+import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -25,6 +26,8 @@ from urllib.parse import urljoin
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 log = logging.getLogger(__name__)
@@ -41,6 +44,16 @@ _HREF_RE = re.compile(r'<a\s+href="([^"?][^"]*)"', re.IGNORECASE)
 
 USER_AGENT = "nemweb-forecast-tracker/0.1 (+https://github.com/c-hat/nemweb)"
 
+# A full day's backfill is ~150-200 small requests against NEMWEB; running
+# several days back-to-back trips the site's sliding-window rate limit, which
+# surfaces as a 403 (escalating to 403 even on directory listings). We stay
+# under it with a small inter-request delay and recover from any limiting we do
+# hit with bounded exponential backoff. Both are tunable via env vars so the
+# fixture-driven tests (which never touch the network) are unaffected.
+THROTTLE_SECONDS = float(os.environ.get("NEMWEB_THROTTLE_SECONDS", "0.3"))
+MAX_RETRIES = int(os.environ.get("NEMWEB_MAX_RETRIES", "6"))
+_RETRY_STATUSES = frozenset({403, 429, 500, 502, 503, 504})
+
 
 @dataclass(frozen=True)
 class DirectoryEntry:
@@ -52,7 +65,27 @@ class DirectoryEntry:
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers["User-Agent"] = USER_AGENT
+    retry = Retry(
+        total=MAX_RETRIES,
+        backoff_factor=1.0,  # waits ~0.5, 1, 2, 4, 8, 16s between attempts
+        status_forcelist=sorted(_RETRY_STATUSES),
+        allowed_methods=frozenset({"GET"}),
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
     return s
+
+
+def _get(session: requests.Session, url: str, timeout: int) -> requests.Response:
+    """GET with a polite inter-request delay; retries/backoff live on the adapter."""
+    if THROTTLE_SECONDS:
+        time.sleep(THROTTLE_SECONDS)
+    resp = session.get(url, timeout=timeout)
+    resp.raise_for_status()
+    return resp
 
 
 def parse_filename_timestamp(filename: str) -> datetime | None:
@@ -112,15 +145,13 @@ def list_directory(url: str, session: requests.Session | None = None) -> list[Di
     s = session or _session()
     if not url.endswith("/"):
         url = url + "/"
-    resp = s.get(url, timeout=60)
-    resp.raise_for_status()
+    resp = _get(s, url, timeout=60)
     return parse_directory_listing(resp.text, url)
 
 
 def download_zip(url: str, session: requests.Session | None = None) -> bytes:
     s = session or _session()
-    resp = s.get(url, timeout=180)
-    resp.raise_for_status()
+    resp = _get(s, url, timeout=180)
     return resp.content
 
 
