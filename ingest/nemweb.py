@@ -14,11 +14,13 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import os
 import re
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Iterable
+from pathlib import Path
+from typing import Iterable, Protocol
 
 import pandas as pd
 import requests
@@ -201,3 +203,101 @@ def entries_in_range(
         (e for e in entries if e.timestamp is not None and start <= e.timestamp < end),
         key=lambda e: e.timestamp,  # type: ignore[arg-type]
     )
+
+
+# --- Sources -------------------------------------------------------------
+#
+# A Source abstracts "where the report files live". The ingestion code only
+# ever talks to a Source, so the exact same code path runs whether the data
+# comes from the live NEMWEB site (HttpSource) or from local synthetic
+# fixtures (LocalSource). This is what lets the tests exercise the real
+# ingest pipeline without network access.
+
+DEFAULT_BASE_URL = "https://nemweb.com.au"
+
+
+class Source(Protocol):
+    """A place report files can be listed and read from."""
+
+    def list_directory(self, rel_path: str) -> list[DirectoryEntry]:
+        """List data-file entries under a report directory (relative path)."""
+        ...
+
+    def read_tables(self, entry: DirectoryEntry) -> dict[str, pd.DataFrame]:
+        """Read one entry and return its parsed AEMO MMS tables."""
+        ...
+
+
+class HttpSource:
+    """Reads from a live NEMWEB-style Apache index over HTTP(S)."""
+
+    def __init__(self, base_url: str = DEFAULT_BASE_URL, session: requests.Session | None = None):
+        self.base = base_url.rstrip("/")
+        self.session = session or _session()
+
+    def list_directory(self, rel_path: str) -> list[DirectoryEntry]:
+        url = f"{self.base}/{rel_path.strip('/')}/"
+        return list_directory(url, session=self.session)
+
+    def read_tables(self, entry: DirectoryEntry) -> dict[str, pd.DataFrame]:
+        return read_aemo_zip(download_zip(entry.url, session=self.session))
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"HttpSource(base={self.base!r})"
+
+
+class LocalSource:
+    """Reads fixtures from a local directory tree mirroring NEMWEB paths.
+
+    Fixture files may be either ``.zip`` (read exactly like production via
+    ``read_aemo_zip``) or plain ``.csv`` (parsed directly via
+    ``parse_aemo_csv``). Plain CSVs keep the fixtures human-reviewable in git
+    while still flowing through the same ``parse_aemo_csv`` used for live data.
+
+    The directory layout under ``base_dir`` mirrors the live site, e.g.::
+
+        <base_dir>/Reports/Current/Operational_Demand/FORECAST_HH/<file>.csv
+    """
+
+    def __init__(self, base_dir: str | Path):
+        self.base = Path(base_dir)
+
+    def list_directory(self, rel_path: str) -> list[DirectoryEntry]:
+        d = self.base / rel_path.strip("/")
+        if not d.is_dir():
+            return []
+        entries: list[DirectoryEntry] = []
+        for p in sorted(d.iterdir()):
+            if p.suffix.lower() not in (".zip", ".csv"):
+                continue
+            entries.append(
+                DirectoryEntry(
+                    filename=p.name,
+                    url=str(p),
+                    timestamp=parse_filename_timestamp(p.name),
+                )
+            )
+        return entries
+
+    def read_tables(self, entry: DirectoryEntry) -> dict[str, pd.DataFrame]:
+        p = Path(entry.url)
+        data = p.read_bytes()
+        if p.suffix.lower() == ".zip":
+            return read_aemo_zip(data)
+        return parse_aemo_csv(data.decode("utf-8", errors="replace"))
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"LocalSource(base={self.base!r})"
+
+
+def make_source(spec: str | None = None, session: requests.Session | None = None) -> Source:
+    """Build a Source from a spec string.
+
+    Resolution order: explicit ``spec`` arg, then ``$NEMWEB_SOURCE``, then the
+    live site. A spec starting with ``http://`` or ``https://`` yields an
+    HttpSource; anything else is treated as a local fixture directory.
+    """
+    spec = spec or os.environ.get("NEMWEB_SOURCE") or DEFAULT_BASE_URL
+    if spec.startswith("http://") or spec.startswith("https://"):
+        return HttpSource(spec, session=session)
+    return LocalSource(spec)

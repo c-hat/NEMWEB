@@ -1,7 +1,8 @@
 """Parser smoke tests against synthetic AEMO MMS-format CSVs.
 
-These don't touch the network. Real-data validation happens via
-`uv run python ingest.py --date <yesterday>` against NEMWEB.
+These don't touch the network. End-to-end pipeline tests live in
+`../tests/test_ingest.py`; real-data validation happens via the `ingest`
+GitHub workflow (the sandbox can't reach NEMWEB).
 
 Run:
     uv run python -m pytest test_parser.py     (if pytest installed)

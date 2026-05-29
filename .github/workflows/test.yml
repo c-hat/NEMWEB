@@ -1,0 +1,26 @@
+name: test
+
+# Fixture-driven tests. No network access to NEMWEB is required: the ingest
+# pipeline runs against the synthetic fixtures under tests/fixtures/.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        working-directory: ingest
+        run: uv sync
+
+      - name: Run tests
+        working-directory: ingest
+        run: uv run python -m pytest -q

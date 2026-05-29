@@ -9,5 +9,16 @@ dependencies = [
     "python-dateutil>=2.9",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+# Tests live both alongside the package (ingest/test_parser.py) and at the
+# repo root (tests/). Both are runnable directly; pytest discovers them from
+# the repo root.
+testpaths = ["test_parser.py", "../tests"]

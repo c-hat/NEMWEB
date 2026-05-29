@@ -1,0 +1,75 @@
+name: ingest
+
+# Real-world ingestion: fetch live AEMO NEMWEB data and commit the resulting
+# JSON to public/data/. This is the project's real-world validation step --
+# the sandbox can't reach nemweb.com.au, so GitHub-hosted runners do the live
+# fetch instead.
+#
+# Trigger manually from the Actions tab (workflow_dispatch). It will use the
+# live NEMWEB site by default (no --source, so NEMWEB_SOURCE/default applies).
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Trading day D (YYYY-MM-DD, AEST). Default: yesterday (AEST)."
+        required: false
+        type: string
+      backfill:
+        description: "Ingest the last N days instead of a single date (overrides date)."
+        required: false
+        type: string
+
+# Needed to commit the generated JSON back to the branch.
+permissions:
+  contents: write
+
+concurrency:
+  group: ingest-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        working-directory: ingest
+        run: uv sync
+
+      - name: Build ingest command
+        id: cmd
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.backfill }}" ]; then
+            echo "args=--backfill ${{ inputs.backfill }}" >> "$GITHUB_OUTPUT"
+          else
+            DATE="${{ inputs.date }}"
+            if [ -z "$DATE" ]; then
+              # Australia/Brisbane is AEST year-round (no DST), matching AEMO.
+              DATE="$(TZ=Australia/Brisbane date -d 'yesterday' +%Y-%m-%d)"
+            fi
+            echo "args=--date $DATE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run ingest against live NEMWEB
+        working-directory: ingest
+        run: |
+          uv run python ingest.py ${{ steps.cmd.outputs.args }} \
+            --out ../public/data --verbose
+
+      - name: Commit data
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/data
+          if git diff --staged --quiet; then
+            echo "No data changes to commit."
+          else
+            git commit -m "data: ingest ${{ steps.cmd.outputs.args }}"
+            git push origin HEAD:${{ github.ref_name }}
+          fi

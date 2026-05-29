@@ -8,10 +8,17 @@ For a given trading day D (in AEST), pulls:
 then writes one JSON per day into the output directory along with
 latest.json and index.json pointers.
 
+Data source:
+    By default the live NEMWEB site is used. Point at local fixtures (or any
+    mirror) with --source or the NEMWEB_SOURCE env var; a path is treated as a
+    local fixture directory, an http(s):// value as a base URL. The same code
+    path runs in both cases.
+
 Usage:
     uv run python ingest.py --date 2026-05-27
     uv run python ingest.py --backfill 30
     uv run python ingest.py --date 2026-05-27 --out ../public/data
+    uv run python ingest.py --date 2026-05-28 --source ../tests/fixtures/nemweb
 """
 
 from __future__ import annotations
@@ -24,16 +31,14 @@ from datetime import datetime, timedelta, date as date_cls
 from pathlib import Path
 
 import pandas as pd
-import requests
 
 from nemweb import (
     AEST,
     DirectoryEntry,
-    download_zip,
+    Source,
     entries_in_range,
-    list_directory,
+    make_source,
     pick_snapshot_at_or_before,
-    read_aemo_zip,
 )
 
 
@@ -41,10 +46,11 @@ log = logging.getLogger("ingest")
 
 REGIONS = ["NSW1", "VIC1", "QLD1", "SA1", "TAS1"]
 
-URL_DEMAND_FORECAST = "https://nemweb.com.au/Reports/Current/Operational_Demand/FORECAST_HH/"
-URL_DEMAND_ACTUAL = "https://nemweb.com.au/Reports/Current/Operational_Demand/ACTUAL_HH/"
-URL_ROOFTOP_FORECAST = "https://nemweb.com.au/Reports/Current/ROOFTOP_PV/FORECAST/"
-URL_ROOFTOP_ACTUAL = "https://nemweb.com.au/Reports/Current/ROOFTOP_PV/ACTUAL/"
+# Report directories, relative to the source base (live site or fixture root).
+PATH_DEMAND_FORECAST = "Reports/Current/Operational_Demand/FORECAST_HH"
+PATH_DEMAND_ACTUAL = "Reports/Current/Operational_Demand/ACTUAL_HH"
+PATH_ROOFTOP_FORECAST = "Reports/Current/ROOFTOP_PV/FORECAST"
+PATH_ROOFTOP_ACTUAL = "Reports/Current/ROOFTOP_PV/ACTUAL"
 
 
 def half_hour_intervals(trading_day: date_cls) -> list[datetime]:
@@ -94,24 +100,35 @@ def _series_for_region(
 
 # --- Demand --------------------------------------------------------------
 
-def fetch_demand_forecast(trading_day: date_cls, session: requests.Session | None = None) -> tuple[pd.DataFrame, DirectoryEntry]:
+def _forecast_cutoff(trading_day: date_cls) -> datetime:
+    """Latest issue time we'll accept for a day-ahead snapshot: D-1 17:00 AEST.
+
+    The brief targets the ~D-1 16:00 snapshot; allowing up to 17:00 lets the
+    picker fall back to the most recent earlier snapshot when the exact 16:00
+    file is missing.
+    """
+    return datetime(trading_day.year, trading_day.month, trading_day.day, tzinfo=AEST) - timedelta(hours=7)
+
+
+def fetch_demand_forecast(trading_day: date_cls, source: Source) -> tuple[pd.DataFrame, DirectoryEntry]:
     """Pick the forecast snapshot issued nearest D-1 16:00 AEST and return its rows."""
-    cutoff = datetime(trading_day.year, trading_day.month, trading_day.day, tzinfo=AEST) - timedelta(hours=7)  # D-1 17:00
-    entries = list_directory(URL_DEMAND_FORECAST, session=session)
+    cutoff = _forecast_cutoff(trading_day)
+    entries = source.list_directory(PATH_DEMAND_FORECAST)
     chosen = pick_snapshot_at_or_before(entries, cutoff)
     if chosen is None:
         raise RuntimeError(f"No demand forecast snapshot at or before {cutoff.isoformat()}")
     log.info("demand forecast snapshot: %s (issued %s)", chosen.filename, chosen.timestamp)
-    tables = read_aemo_zip(download_zip(chosen.url, session=session))
+    tables = source.read_tables(chosen)
     # AEMO publishes this as "OPERATIONAL_DEMAND" report with "FORECAST_HH" table,
-    # or sometimes "DEMANDOPERATIONALFORECAST". Match either.
+    # or sometimes "DEMANDOPERATIONALFORECAST". Match on columns rather than the
+    # table name so either naming works.
     for key, df in tables.items():
         if "FORECAST" in key.upper() and "OPERATIONAL_DEMAND_POE50" in {c.upper() for c in df.columns}:
             return df, chosen
     raise RuntimeError(f"Demand forecast table not found in {chosen.filename}; got: {list(tables)}")
 
 
-def fetch_demand_actual(trading_day: date_cls, session: requests.Session | None = None) -> pd.DataFrame:
+def fetch_demand_actual(trading_day: date_cls, source: Source) -> pd.DataFrame:
     """Concatenate all ACTUAL_HH files whose filename timestamp falls inside D (AEST).
 
     AEMO's ACTUAL_HH files are issued repeatedly through the day; one file per
@@ -120,13 +137,13 @@ def fetch_demand_actual(trading_day: date_cls, session: requests.Session | None 
     """
     start = datetime(trading_day.year, trading_day.month, trading_day.day, tzinfo=AEST)
     end = start + timedelta(days=1)
-    entries = list_directory(URL_DEMAND_ACTUAL, session=session)
+    entries = source.list_directory(PATH_DEMAND_ACTUAL)
     in_window = entries_in_range(entries, start, end + timedelta(hours=6))  # slop for late files
     if not in_window:
         raise RuntimeError(f"No demand actual files in window {start.isoformat()}..{end.isoformat()}")
     frames: list[pd.DataFrame] = []
     for e in in_window:
-        tables = read_aemo_zip(download_zip(e.url, session=session))
+        tables = source.read_tables(e)
         for key, df in tables.items():
             cols_upper = {c.upper() for c in df.columns}
             if "OPERATIONAL_DEMAND" in cols_upper and "INTERVAL_DATETIME" in cols_upper:
@@ -138,14 +155,14 @@ def fetch_demand_actual(trading_day: date_cls, session: requests.Session | None 
 
 # --- Rooftop PV ----------------------------------------------------------
 
-def fetch_rooftop_forecast(trading_day: date_cls, session: requests.Session | None = None) -> tuple[pd.DataFrame, DirectoryEntry]:
-    cutoff = datetime(trading_day.year, trading_day.month, trading_day.day, tzinfo=AEST) - timedelta(hours=7)
-    entries = list_directory(URL_ROOFTOP_FORECAST, session=session)
+def fetch_rooftop_forecast(trading_day: date_cls, source: Source) -> tuple[pd.DataFrame, DirectoryEntry]:
+    cutoff = _forecast_cutoff(trading_day)
+    entries = source.list_directory(PATH_ROOFTOP_FORECAST)
     chosen = pick_snapshot_at_or_before(entries, cutoff)
     if chosen is None:
         raise RuntimeError(f"No rooftop PV forecast snapshot at or before {cutoff.isoformat()}")
     log.info("rooftop forecast snapshot: %s (issued %s)", chosen.filename, chosen.timestamp)
-    tables = read_aemo_zip(download_zip(chosen.url, session=session))
+    tables = source.read_tables(chosen)
     for key, df in tables.items():
         cols_upper = {c.upper() for c in df.columns}
         if "POWERPOE50" in cols_upper and "REGIONID" in cols_upper:
@@ -153,16 +170,16 @@ def fetch_rooftop_forecast(trading_day: date_cls, session: requests.Session | No
     raise RuntimeError(f"Rooftop forecast table not found in {chosen.filename}; got: {list(tables)}")
 
 
-def fetch_rooftop_actual(trading_day: date_cls, session: requests.Session | None = None) -> pd.DataFrame:
+def fetch_rooftop_actual(trading_day: date_cls, source: Source) -> pd.DataFrame:
     start = datetime(trading_day.year, trading_day.month, trading_day.day, tzinfo=AEST)
     end = start + timedelta(days=1)
-    entries = list_directory(URL_ROOFTOP_ACTUAL, session=session)
+    entries = source.list_directory(PATH_ROOFTOP_ACTUAL)
     in_window = entries_in_range(entries, start, end + timedelta(hours=6))
     if not in_window:
         raise RuntimeError(f"No rooftop actual files in window {start.isoformat()}..{end.isoformat()}")
     frames: list[pd.DataFrame] = []
     for e in in_window:
-        tables = read_aemo_zip(download_zip(e.url, session=session))
+        tables = source.read_tables(e)
         for _, df in tables.items():
             cols_upper = {c.upper() for c in df.columns}
             if "POWER" in cols_upper and "REGIONID" in cols_upper and "INTERVAL_DATETIME" in cols_upper:
@@ -177,14 +194,14 @@ def fetch_rooftop_actual(trading_day: date_cls, session: requests.Session | None
 
 # --- Composition ---------------------------------------------------------
 
-def build_day_payload(trading_day: date_cls, session: requests.Session | None = None) -> dict:
+def build_day_payload(trading_day: date_cls, source: Source) -> dict:
     intervals = half_hour_intervals(trading_day)
     interval_iso = [t.strftime("%Y-%m-%dT%H:%M%z").replace("+1000", "+10:00") for t in intervals]
 
-    demand_fc, demand_fc_entry = fetch_demand_forecast(trading_day, session=session)
-    demand_actual = fetch_demand_actual(trading_day, session=session)
-    rooftop_fc, rooftop_fc_entry = fetch_rooftop_forecast(trading_day, session=session)
-    rooftop_actual = fetch_rooftop_actual(trading_day, session=session)
+    demand_fc, demand_fc_entry = fetch_demand_forecast(trading_day, source)
+    demand_actual = fetch_demand_actual(trading_day, source)
+    rooftop_fc, rooftop_fc_entry = fetch_rooftop_forecast(trading_day, source)
+    rooftop_actual = fetch_rooftop_actual(trading_day, source)
 
     # Issue time recorded as the snapshot whose timestamp drove the demand pick
     # (demand and rooftop snapshots may differ slightly; we report demand's).
@@ -201,9 +218,14 @@ def build_day_payload(trading_day: date_cls, session: requests.Session | None = 
         }
         rooftop_block = {
             "intervals": interval_iso,
-            "poe10": _series_for_region(rooftop_fc, region, "POWERPOELOW", intervals),
+            # POE convention is kept consistent with demand: poe10 is the HIGH
+            # band (exceeded only ~10% of the time), poe90 the LOW band. For
+            # rooftop that means poe10 <- POWERPOEHIGH and poe90 <- POWERPOELOW.
+            # NOTE: confirm POWERPOEHIGH/POWERPOELOW <-> POE10/POE90 against real
+            # AEMO data on the first Action run (see FLAGS.md).
+            "poe10": _series_for_region(rooftop_fc, region, "POWERPOEHIGH", intervals),
             "poe50": _series_for_region(rooftop_fc, region, "POWERPOE50", intervals),
-            "poe90": _series_for_region(rooftop_fc, region, "POWERPOEHIGH", intervals),
+            "poe90": _series_for_region(rooftop_fc, region, "POWERPOELOW", intervals),
             "actual": _series_for_region(rooftop_actual, region, "POWER", intervals),
         }
         regions_payload[region] = {"demand": demand_block, "rooftopPv": rooftop_block}
@@ -234,9 +256,9 @@ def write_outputs(payload: dict, out_dir: Path) -> Path:
     return day_path
 
 
-def ingest_day(trading_day: date_cls, out_dir: Path, session: requests.Session | None = None) -> Path:
+def ingest_day(trading_day: date_cls, out_dir: Path, source: Source) -> Path:
     log.info("ingesting trading day %s", trading_day.isoformat())
-    payload = build_day_payload(trading_day, session=session)
+    payload = build_day_payload(trading_day, source)
     return write_outputs(payload, out_dir)
 
 
@@ -249,6 +271,9 @@ def main(argv: list[str]) -> int:
                    help="Ingest the last N days, ending yesterday (AEST)")
     p.add_argument("--out", type=Path, default=Path(__file__).resolve().parents[1] / "public" / "data",
                    help="Output directory for JSON (default: ../public/data)")
+    p.add_argument("--source", default=None,
+                   help="Data source: an http(s):// base URL or a local fixture directory. "
+                        "Defaults to $NEMWEB_SOURCE or the live NEMWEB site.")
     p.add_argument("--verbose", "-v", action="store_true")
     args = p.parse_args(argv)
 
@@ -263,13 +288,13 @@ def main(argv: list[str]) -> int:
     else:
         days = [args.date]
 
-    session = requests.Session()
-    session.headers["User-Agent"] = "nemweb-forecast-tracker/0.1"
+    source = make_source(args.source)
+    log.info("source: %s", source)
 
     failures: list[tuple[date_cls, str]] = []
     for d in days:
         try:
-            out_path = ingest_day(d, args.out, session=session)
+            out_path = ingest_day(d, args.out, source)
             log.info("wrote %s", out_path)
         except Exception as exc:  # noqa: BLE001
             log.warning("skipped %s: %s", d.isoformat(), exc)
