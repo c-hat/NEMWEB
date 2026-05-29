@@ -221,8 +221,8 @@ def build_day_payload(trading_day: date_cls, source: Source) -> dict:
             # POE convention is kept consistent with demand: poe10 is the HIGH
             # band (exceeded only ~10% of the time), poe90 the LOW band. For
             # rooftop that means poe10 <- POWERPOEHIGH and poe90 <- POWERPOELOW.
-            # NOTE: confirm POWERPOEHIGH/POWERPOELOW <-> POE10/POE90 against real
-            # AEMO data on the first Action run (see FLAGS.md).
+            # Confirmed against live data (POWERPOELOW < POWERPOE50 <
+            # POWERPOEHIGH, zero band-order violations); see FLAGS.md.
             "poe10": _series_for_region(rooftop_fc, region, "POWERPOEHIGH", intervals),
             "poe50": _series_for_region(rooftop_fc, region, "POWERPOE50", intervals),
             "poe90": _series_for_region(rooftop_fc, region, "POWERPOELOW", intervals),

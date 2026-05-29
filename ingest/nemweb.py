@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Iterable, Protocol
+from urllib.parse import urljoin
 
 import pandas as pd
 import requests
@@ -70,35 +71,50 @@ def parse_filename_timestamp(filename: str) -> datetime | None:
         return None
 
 
+def parse_directory_listing(html: str, base_url: str) -> list[DirectoryEntry]:
+    """Parse an Apache-style directory index into data-file entries.
+
+    NEMWEB links files by *absolute* path with mixed casing, e.g.
+    ``<A HREF="/Reports/CURRENT/.../FILE.zip">``. We resolve each href against
+    ``base_url`` and take the basename as the filename. Subdirectory links,
+    column-sort links (``?C=...``) and non-zip files are skipped. This is the
+    pure, network-free core of :func:`list_directory`.
+    """
+    if not base_url.endswith("/"):
+        base_url = base_url + "/"
+    entries: list[DirectoryEntry] = []
+    seen: set[str] = set()
+    for href in _HREF_RE.findall(html):
+        if href in seen:
+            continue
+        seen.add(href)
+        if href.endswith("/") or href.startswith("?"):
+            continue
+        filename = href.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+        if not filename.lower().endswith(".zip"):
+            continue
+        entries.append(
+            DirectoryEntry(
+                filename=filename,
+                url=urljoin(base_url, href),
+                timestamp=parse_filename_timestamp(filename),
+            )
+        )
+    return entries
+
+
 def list_directory(url: str, session: requests.Session | None = None) -> list[DirectoryEntry]:
     """List a NEMWEB Apache-style directory index.
 
-    Returns entries whose filenames look like data files (currently: end in .zip
-    or .ZIP). Subdirectories and the parent link are filtered out.
+    Returns entries whose filenames look like data files (currently: end in
+    .zip or .ZIP). Subdirectories and the parent link are filtered out.
     """
     s = session or _session()
     if not url.endswith("/"):
         url = url + "/"
     resp = s.get(url, timeout=60)
     resp.raise_for_status()
-    entries: list[DirectoryEntry] = []
-    seen: set[str] = set()
-    for href in _HREF_RE.findall(resp.text):
-        if href in seen:
-            continue
-        seen.add(href)
-        if href.endswith("/") or href.startswith("?") or href.startswith("/"):
-            continue
-        if not href.lower().endswith(".zip"):
-            continue
-        entries.append(
-            DirectoryEntry(
-                filename=href,
-                url=url + href,
-                timestamp=parse_filename_timestamp(href),
-            )
-        )
-    return entries
+    return parse_directory_listing(resp.text, url)
 
 
 def download_zip(url: str, session: requests.Session | None = None) -> bytes:

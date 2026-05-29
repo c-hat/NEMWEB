@@ -1,8 +1,8 @@
 """Parser smoke tests against synthetic AEMO MMS-format CSVs.
 
 These don't touch the network. End-to-end pipeline tests live in
-`../tests/test_ingest.py`; real-data validation happens via the `ingest`
-GitHub workflow (the sandbox can't reach NEMWEB).
+`../tests/test_ingest.py`; live real-data validation is recorded in
+`../FLAGS.md` and can be reproduced via the `ingest` GitHub workflow.
 
 Run:
     uv run python -m pytest test_parser.py     (if pytest installed)
@@ -18,6 +18,7 @@ from datetime import date, datetime
 from nemweb import (
     AEST,
     parse_aemo_csv,
+    parse_directory_listing,
     parse_filename_timestamp,
     pick_snapshot_at_or_before,
     read_aemo_zip,
@@ -93,6 +94,35 @@ def test_pick_snapshot_at_or_before():
     chosen = pick_snapshot_at_or_before(entries, cutoff)
     assert chosen is not None
     assert chosen.filename == "a_202605271600.zip"
+
+
+# A real NEMWEB Apache index links files by absolute, upper-cased path and
+# carries column-sort and parent-directory links that must be ignored. This
+# mirrors the live markup (see https://nemweb.com.au/Reports/Current/...).
+SAMPLE_INDEX_HTML = """\
+<html><head><title>Index of /Reports/CURRENT/Operational_Demand/ACTUAL_HH</title></head>
+<body><h1>Index of /Reports/CURRENT/Operational_Demand/ACTUAL_HH</h1>
+<pre><img src="/icons/blank.gif"> <A HREF="?C=N;O=D">Name</A>
+<img src="/icons/back.gif"> <A HREF="/Reports/CURRENT/Operational_Demand/">Parent Directory</A>
+<img src="/icons/compressed.gif"> <A HREF="/Reports/CURRENT/Operational_Demand/ACTUAL_HH/PUBLIC_ACTUAL_OPERATIONAL_DEMAND_HH_202605280000_20260528000301.zip">PUBLIC_ACTUAL...</A>
+<img src="/icons/compressed.gif"> <A HREF="/Reports/CURRENT/Operational_Demand/ACTUAL_HH/PUBLIC_ACTUAL_OPERATIONAL_DEMAND_HH_202605280030_20260528003020.zip">PUBLIC_ACTUAL...</A>
+</pre></body></html>
+"""
+
+
+def test_parse_directory_listing_absolute_hrefs():
+    base = "https://nemweb.com.au/Reports/Current/Operational_Demand/ACTUAL_HH/"
+    entries = parse_directory_listing(SAMPLE_INDEX_HTML, base)
+    # Only the two .zip data files; parent dir and ?C= sort link are dropped.
+    assert len(entries) == 2
+    e = entries[0]
+    assert e.filename == "PUBLIC_ACTUAL_OPERATIONAL_DEMAND_HH_202605280000_20260528000301.zip"
+    # Absolute href resolved against host (not naively appended to the dir URL).
+    assert e.url == (
+        "https://nemweb.com.au/Reports/CURRENT/Operational_Demand/ACTUAL_HH/"
+        "PUBLIC_ACTUAL_OPERATIONAL_DEMAND_HH_202605280000_20260528000301.zip"
+    )
+    assert e.timestamp == datetime(2026, 5, 28, 0, 0, tzinfo=AEST)
 
 
 def _run_all() -> int:
