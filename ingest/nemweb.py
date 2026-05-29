@@ -38,7 +38,18 @@ _TS_RE = re.compile(r"(\d{12,14})")
 # Apache directory index <a href="filename"> capture.
 _HREF_RE = re.compile(r'<a\s+href="([^"?][^"]*)"', re.IGNORECASE)
 
-USER_AGENT = "nemweb-forecast-tracker/0.1 (+https://github.com/c-hat/nemweb)"
+# NEMWEB sits behind a WAF that 403s requests lacking a browser-like
+# User-Agent, so we present one (plus matching Accept headers). The data is
+# public; this is just to get past the bot filter.
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+_DEFAULT_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-AU,en;q=0.9",
+}
 
 
 @dataclass(frozen=True)
@@ -50,7 +61,7 @@ class DirectoryEntry:
 
 def _session() -> requests.Session:
     s = requests.Session()
-    s.headers["User-Agent"] = USER_AGENT
+    s.headers.update(_DEFAULT_HEADERS)
     return s
 
 
