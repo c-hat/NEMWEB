@@ -109,6 +109,29 @@ export function fetchDay(date: string): Promise<DayData> {
   return fetchJson<DayData>(`${DATA_DIR}/${date}.json`);
 }
 
+/** One day in the demand forecast-error rankings. */
+export interface RankingEntry {
+  date: string;
+  /** Daily mean absolute error between actual demand and day-ahead POE50, MW. */
+  maeMw: number;
+  /** Mean signed error (actual - forecast); positive = under-forecast. */
+  meanSignedErrorMw: number;
+  /** Intervals used in the average. */
+  intervals: number;
+}
+
+export interface Rankings {
+  metric: string;
+  topN: number;
+  /** Top days per region, plus a "NEM" aggregate, sorted by maeMw descending. */
+  regions: Record<string, RankingEntry[]>;
+}
+
+/** Precomputed top days by demand forecast error (maintained by the ingest). */
+export function fetchRankings(): Promise<Rankings> {
+  return fetchJson<Rankings>(`${DATA_DIR}/demand-error-rankings.json`);
+}
+
 /** Element-wise sum of several series; null if any region is missing that interval. */
 function sumSeries(series: (number | null)[][]): (number | null)[] {
   const len = series[0]?.length ?? 0;

@@ -7,10 +7,12 @@ import {
   fetchDay,
   fetchIndex,
   fetchLatest,
+  fetchRankings,
   formatIssued,
   REGION_LABELS,
   SELECTABLE_REGIONS,
   type DayData,
+  type Rankings,
   type SelectableRegion,
 } from '@/lib/data';
 
@@ -21,6 +23,20 @@ export default function Home() {
   const [day, setDay] = useState<DayData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [rankings, setRankings] = useState<Rankings | null>(null);
+
+  // Load the precomputed demand forecast-error rankings once (optional feature;
+  // a failure just leaves the "Largest demand errors" menu empty).
+  useEffect(() => {
+    let cancelled = false;
+    fetchRankings().then(
+      (r) => !cancelled && setRankings(r),
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Load the day index and the latest-day pointer once on mount.
   useEffect(() => {
@@ -102,6 +118,9 @@ export default function Home() {
     return region === 'NEM' ? buildNemRegion(day.regions) : day.regions[region];
   }, [day, region]);
 
+  // Top demand-error days for the currently selected region.
+  const rankingList = rankings?.regions[region] ?? [];
+
   return (
     <main className="container">
       <header className="page-header">
@@ -159,6 +178,26 @@ export default function Home() {
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="control-group errors-control">
+          <label htmlFor="errors-select">Largest demand errors</label>
+          <select
+            id="errors-select"
+            className="errors-select"
+            value={rankingList.some((e) => e.date === selectedDate) ? selectedDate : ''}
+            onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
+            disabled={rankingList.length === 0}
+          >
+            <option value="" disabled>
+              {rankingList.length ? `Top ${rankingList.length} — ${REGION_LABELS[region]}` : 'No data'}
+            </option>
+            {rankingList.map((e, i) => (
+              <option key={e.date} value={e.date}>
+                {`${i + 1}. ${e.date} · ${Math.round(e.maeMw).toLocaleString('en-AU')} MW avg`}
+              </option>
+            ))}
+          </select>
         </div>
       </section>
 

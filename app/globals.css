@@ -124,6 +124,34 @@ body {
   cursor: not-allowed;
 }
 
+/* "Largest demand errors" menu: pushed to the right of the controls bar. */
+.errors-control {
+  margin-left: auto;
+}
+
+.errors-select {
+  height: 38px;
+  max-width: 280px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.errors-select:focus {
+  outline: none;
+  border-color: var(--ink);
+}
+
+.errors-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Region switcher: one flat horizontal row, sharp corners, dark selected fill. */
 .region-switcher {
   display: inline-flex;
