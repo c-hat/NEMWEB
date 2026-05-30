@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - main
+  # Redeploy after the daily ingest commits new data to main. (The ingest's
+  # commit is pushed with GITHUB_TOKEN, which can't trigger the push event
+  # above, so we chain off the workflow completing instead.)
+  workflow_run:
+    workflows: ["ingest"]
+    types:
+      - completed
   workflow_dispatch:
 
 permissions:
@@ -18,8 +25,15 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # For workflow_run (after ingest) only deploy if the ingest succeeded.
+    # push/workflow_dispatch carry no workflow_run payload, so they always run.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Deploy the tip of main, which includes the data the ingest run just
+          # committed — workflow_run's default ref predates that commit.
+          ref: main
       - uses: actions/setup-node@v4
         with:
           node-version: 22
