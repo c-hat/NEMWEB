@@ -6,6 +6,8 @@ import {
   fetchDay,
   fetchIndex,
   fetchLatest,
+  formatIssued,
+  REGION_LABELS,
   REGIONS,
   type DayData,
   type Region,
@@ -83,25 +85,41 @@ export default function Home() {
           <div className="date-nav">
             <button
               type="button"
+              className="chevron"
               onClick={() => hasPrev && setSelectedDate(dates[currentIndex - 1])}
               disabled={!hasPrev}
               aria-label="Previous day"
             >
               ‹
             </button>
-            <select
-              id="date-select"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-            >
-              {dates.map((d) => (
-                <option key={d} value={d}>
-                  {d}
-                </option>
-              ))}
-            </select>
+            <span className="date-field">
+              <svg
+                className="cal-icon"
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                aria-hidden="true"
+              >
+                <rect x="3" y="4.5" width="18" height="16" rx="2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                <line x1="3" y1="9" x2="21" y2="9" stroke="currentColor" strokeWidth="1.6" />
+                <line x1="8" y1="2.5" x2="8" y2="6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                <line x1="16" y1="2.5" x2="16" y2="6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+              <select
+                id="date-select"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+              >
+                {dates.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </span>
             <button
               type="button"
+              className="chevron"
               onClick={() => hasNext && setSelectedDate(dates[currentIndex + 1])}
               disabled={!hasNext}
               aria-label="Next day"
@@ -121,7 +139,7 @@ export default function Home() {
                 className={r === region ? 'active' : ''}
                 onClick={() => setRegion(r)}
               >
-                {r}
+                {REGION_LABELS[r]}
               </button>
             ))}
           </div>
@@ -129,14 +147,9 @@ export default function Home() {
       </section>
 
       {day && (
-        <section className="context">
-          <span>
-            <strong>Trading date:</strong> {day.tradingDate}
-          </span>
-          <span>
-            <strong>Forecast issued:</strong> {day.forecastIssuedAt}
-          </span>
-        </section>
+        <p className="context">
+          <strong>Forecast issued:</strong> {formatIssued(day.forecastIssuedAt)}
+        </p>
       )}
 
       {error && <p className="error">Error loading data: {error}</p>}
@@ -144,9 +157,13 @@ export default function Home() {
 
       {!loading && !error && regionData && (
         <section className="charts">
-          <ForecastChart title={`${region} — Demand`} unit="MW" metric={regionData.demand} />
           <ForecastChart
-            title={`${region} — Rooftop PV`}
+            title={`${REGION_LABELS[region]} — Demand`}
+            unit="MW"
+            metric={regionData.demand}
+          />
+          <ForecastChart
+            title={`${REGION_LABELS[region]} — Rooftop PV`}
             unit="MW"
             metric={regionData.rooftopPv}
           />

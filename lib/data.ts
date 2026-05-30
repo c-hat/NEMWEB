@@ -9,6 +9,38 @@
 export const REGIONS = ['NSW1', 'VIC1', 'QLD1', 'SA1', 'TAS1'] as const;
 export type Region = (typeof REGIONS)[number];
 
+/** Display labels for the UI. Internal AEMO codes (NSW1 …) stay in the data layer. */
+export const REGION_LABELS: Record<string, string> = {
+  NSW1: 'NSW',
+  VIC1: 'VIC',
+  QLD1: 'QLD',
+  SA1: 'SA',
+  TAS1: 'TAS',
+};
+
+/**
+ * Format a forecast-issued ISO timestamp (always +10:00 AEST) as a readable
+ * label, e.g. "2026-05-27T17:00+10:00" -> "5:00pm AEST, Wed 27 May 2026".
+ */
+export function formatIssued(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const parts = new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Australia/Brisbane',
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).formatToParts(d);
+  const p: Record<string, string> = {};
+  for (const part of parts) p[part.type] = part.value;
+  const ampm = (p.dayPeriod || '').toLowerCase().replace(/\s|\./g, '');
+  return `${p.hour}:${p.minute}${ampm} AEST, ${p.weekday} ${p.day} ${p.month} ${p.year}`;
+}
+
 /** A forecast/actual series. Missing values are null. 48 half-hour intervals. */
 export interface Metric {
   /** ISO timestamps for each half-hour-ending interval (00:30 … 24:00 AEST). */

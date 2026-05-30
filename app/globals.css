@@ -69,18 +69,40 @@ body {
   gap: 6px;
 }
 
-.date-nav select {
-  padding: 8px 10px;
+.date-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: 44px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 0.95rem;
   background: #fff;
+  cursor: pointer;
 }
 
-.date-nav button {
-  width: 36px;
-  height: 36px;
-  font-size: 1.1rem;
+.date-field:focus-within {
+  border-color: var(--accent);
+}
+
+.date-field .cal-icon {
+  color: var(--muted);
+  flex: none;
+}
+
+.date-field select {
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 1rem;
+  cursor: pointer;
+  padding-right: 4px;
+}
+
+.date-nav button.chevron {
+  width: 44px;
+  height: 44px;
+  font-size: 1.2rem;
   line-height: 1;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -88,7 +110,7 @@ body {
   cursor: pointer;
 }
 
-.date-nav button:disabled {
+.date-nav button.chevron:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
@@ -116,16 +138,18 @@ body {
 }
 
 .context {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 24px;
-  margin: 20px 0 8px;
+  margin: 16px 0 8px;
   font-size: 0.9rem;
   color: var(--muted);
 }
 
 .context strong {
   color: var(--text);
+}
+
+.chart-body {
+  width: 100%;
+  height: 380px;
 }
 
 .charts {
