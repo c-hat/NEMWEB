@@ -80,36 +80,27 @@ body {
   gap: 4px;
 }
 
-.date-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 10px;
+.date-input {
   height: 38px;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: 3px;
   background: #fff;
-  cursor: pointer;
-}
-
-.date-field:focus-within {
-  border-color: var(--ink);
-}
-
-.date-field .cal-icon {
-  color: var(--muted);
-  flex: none;
-}
-
-.date-field select {
-  border: none;
-  outline: none;
-  background: transparent;
   font-family: var(--font-mono);
   font-size: 0.9rem;
   color: var(--text);
   cursor: pointer;
-  padding-right: 2px;
+}
+
+.date-input:focus-within,
+.date-input:focus {
+  outline: none;
+  border-color: var(--ink);
+}
+
+.date-input::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.55;
 }
 
 .date-nav button.chevron {

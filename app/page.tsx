@@ -69,6 +69,34 @@ export default function Home() {
   const hasPrev = currentIndex > 0;
   const hasNext = currentIndex >= 0 && currentIndex < dates.length - 1;
 
+  const dateSet = useMemo(() => new Set(dates), [dates]);
+
+  // The date picker allows any day in [min, max]; if a gap day is chosen, snap
+  // to the nearest available date so navigation stays on real data.
+  function pickDate(value: string) {
+    if (!value || !dates.length) return;
+    if (dateSet.has(value)) {
+      setSelectedDate(value);
+      return;
+    }
+    let prev: string | null = null;
+    let next: string | null = null;
+    for (const d of dates) {
+      if (d < value) prev = d;
+      else if (d > value) {
+        next = d;
+        break;
+      }
+    }
+    let snapped = prev ?? next;
+    if (prev && next) {
+      const dp = Date.parse(value) - Date.parse(prev);
+      const dn = Date.parse(next) - Date.parse(value);
+      snapped = dp <= dn ? prev : next;
+    }
+    if (snapped) setSelectedDate(snapped);
+  }
+
   const regionData = useMemo(() => {
     if (!day) return null;
     return region === 'NEM' ? buildNemRegion(day.regions) : day.regions[region];
@@ -96,31 +124,15 @@ export default function Home() {
             >
               ‹
             </button>
-            <span className="date-field">
-              <svg
-                className="cal-icon"
-                viewBox="0 0 24 24"
-                width="18"
-                height="18"
-                aria-hidden="true"
-              >
-                <rect x="3" y="4.5" width="18" height="16" rx="2" fill="none" stroke="currentColor" strokeWidth="1.6" />
-                <line x1="3" y1="9" x2="21" y2="9" stroke="currentColor" strokeWidth="1.6" />
-                <line x1="8" y1="2.5" x2="8" y2="6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                <line x1="16" y1="2.5" x2="16" y2="6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-              </svg>
-              <select
-                id="date-select"
-                value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
-              >
-                {dates.map((d) => (
-                  <option key={d} value={d}>
-                    {d}
-                  </option>
-                ))}
-              </select>
-            </span>
+            <input
+              type="date"
+              id="date-select"
+              className="date-input"
+              min={dates[0]}
+              max={dates[dates.length - 1]}
+              value={selectedDate}
+              onChange={(e) => pickDate(e.target.value)}
+            />
             <button
               type="button"
               className="chevron"
