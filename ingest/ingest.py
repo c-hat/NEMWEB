@@ -303,6 +303,17 @@ def main(argv: list[str]) -> int:
     if failures and len(failures) == len(days):
         log.error("all days failed")
         return 1
+
+    # Refresh the demand forecast-error rankings from all day files on disk, so
+    # newly added days enter the top-N list when they qualify.
+    try:
+        from rankings import write_rankings
+
+        rankings_path = write_rankings(args.out)
+        log.info("wrote %s", rankings_path)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("failed to update rankings: %s", exc)
+
     if failures:
         log.warning("%d/%d days skipped", len(failures), len(days))
     return 0
