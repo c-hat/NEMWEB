@@ -157,7 +157,7 @@ export default function Home() {
               id="date-select"
               className="date-input"
               min={dates[0]}
-              max={dates[dates.length - 1]}
+              max={maxDate}
               value={selectedDate}
               onChange={(e) => pickDate(e.target.value)}
             />
