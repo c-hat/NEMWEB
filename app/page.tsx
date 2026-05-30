@@ -3,20 +3,21 @@
 import { useEffect, useMemo, useState } from 'react';
 import ForecastChart from '@/components/ForecastChart';
 import {
+  buildNemRegion,
   fetchDay,
   fetchIndex,
   fetchLatest,
   formatIssued,
   REGION_LABELS,
-  REGIONS,
+  SELECTABLE_REGIONS,
   type DayData,
-  type Region,
+  type SelectableRegion,
 } from '@/lib/data';
 
 export default function Home() {
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
-  const [region, setRegion] = useState<Region>('NSW1');
+  const [region, setRegion] = useState<SelectableRegion>('NSW1');
   const [day, setDay] = useState<DayData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +69,10 @@ export default function Home() {
   const hasPrev = currentIndex > 0;
   const hasNext = currentIndex >= 0 && currentIndex < dates.length - 1;
 
-  const regionData = useMemo(() => day?.regions[region] ?? null, [day, region]);
+  const regionData = useMemo(() => {
+    if (!day) return null;
+    return region === 'NEM' ? buildNemRegion(day.regions) : day.regions[region];
+  }, [day, region]);
 
   return (
     <main className="container">
@@ -132,7 +136,7 @@ export default function Home() {
         <div className="control-group">
           <label>Region</label>
           <div className="region-switcher" role="group" aria-label="Region">
-            {REGIONS.map((r) => (
+            {SELECTABLE_REGIONS.map((r) => (
               <button
                 key={r}
                 type="button"
@@ -167,6 +171,11 @@ export default function Home() {
             unit="MW"
             metric={regionData.rooftopPv}
           />
+          {region === 'NEM' && (
+            <p className="caveat">
+              NEM bands are summed across regions — not a true probabilistic band.
+            </p>
+          )}
         </section>
       )}
     </main>

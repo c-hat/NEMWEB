@@ -199,6 +199,13 @@ body {
   font-size: 1.05rem;
 }
 
+.caveat {
+  margin: 4px 2px 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
 .status,
 .error {
   margin-top: 24px;
