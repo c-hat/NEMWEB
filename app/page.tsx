@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import ForecastChart from '@/components/ForecastChart';
+import { downloadCsv, regionDataToCsv } from '@/lib/csv';
 import {
   buildNemRegion,
   fetchDay,
@@ -121,6 +122,12 @@ export default function Home() {
   // Top demand-error days for the currently selected region.
   const rankingList = rankings?.regions[region] ?? [];
 
+  function handleDownloadCsv() {
+    if (!regionData || !selectedDate) return;
+    const csv = regionDataToCsv(regionData);
+    downloadCsv(`nemweb_${region}_${selectedDate}.csv`, csv);
+  }
+
   return (
     <main className="container">
       <header className="page-header">
@@ -198,6 +205,19 @@ export default function Home() {
               </option>
             ))}
           </select>
+        </div>
+
+        <div className="control-group download-control">
+          <label>&nbsp;</label>
+          <button
+            type="button"
+            className="download-btn"
+            onClick={handleDownloadCsv}
+            disabled={!regionData}
+            title="Download the displayed day and region as CSV"
+          >
+            ↓ Download CSV
+          </button>
         </div>
       </section>
 

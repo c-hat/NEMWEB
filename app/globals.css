@@ -152,6 +152,29 @@ body {
   cursor: not-allowed;
 }
 
+/* CSV download button: flat, matches the region/control aesthetic. */
+.download-btn {
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--ink);
+  color: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.download-btn:hover:not(:disabled) {
+  background: var(--text);
+}
+
+.download-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Region switcher: one flat horizontal row, sharp corners, dark selected fill. */
 .region-switcher {
   display: inline-flex;
