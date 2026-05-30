@@ -113,6 +113,15 @@ export default function Home() {
     if (snapped) setSelectedDate(snapped);
   }
 
+  // Today usually has no data yet (the ingest lags a day). Extend the picker's
+  // max to today so its native "Today" button is selectable; pickDate() then
+  // snaps that choice to the most recent available day.
+  const todayISO = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Brisbane' }).format(
+    new Date(),
+  );
+  const maxDate =
+    dates.length && dates[dates.length - 1] > todayISO ? dates[dates.length - 1] : todayISO;
+
   const regionData = useMemo(() => {
     if (!day) return null;
     return region === 'NEM' ? buildNemRegion(day.regions) : day.regions[region];
