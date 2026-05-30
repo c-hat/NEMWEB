@@ -9,6 +9,43 @@
 export const REGIONS = ['NSW1', 'VIC1', 'QLD1', 'SA1', 'TAS1'] as const;
 export type Region = (typeof REGIONS)[number];
 
+/** Regions offered in the UI: the NEM-wide aggregate plus the five AEMO regions. */
+export const SELECTABLE_REGIONS = ['NEM', 'NSW1', 'VIC1', 'QLD1', 'SA1', 'TAS1'] as const;
+export type SelectableRegion = (typeof SELECTABLE_REGIONS)[number];
+
+/** Display labels for the UI. Internal AEMO codes (NSW1 …) stay in the data layer. */
+export const REGION_LABELS: Record<string, string> = {
+  NEM: 'NEM',
+  NSW1: 'NSW',
+  VIC1: 'VIC',
+  QLD1: 'QLD',
+  SA1: 'SA',
+  TAS1: 'TAS',
+};
+
+/**
+ * Format a forecast-issued ISO timestamp (always +10:00 AEST) as a readable
+ * label, e.g. "2026-05-27T17:00+10:00" -> "5:00pm AEST, Wed 27 May 2026".
+ */
+export function formatIssued(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const parts = new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Australia/Brisbane',
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).formatToParts(d);
+  const p: Record<string, string> = {};
+  for (const part of parts) p[part.type] = part.value;
+  const ampm = (p.dayPeriod || '').toLowerCase().replace(/\s|\./g, '');
+  return `${p.hour}:${p.minute}${ampm} AEST, ${p.weekday} ${p.day} ${p.month} ${p.year}`;
+}
+
 /** A forecast/actual series. Missing values are null. 48 half-hour intervals. */
 export interface Metric {
   /** ISO timestamps for each half-hour-ending interval (00:30 … 24:00 AEST). */
@@ -70,4 +107,48 @@ export function fetchLatest(): Promise<LatestEntry> {
 /** Full per-day forecast/actual payload for a given trading date (YYYY-MM-DD). */
 export function fetchDay(date: string): Promise<DayData> {
   return fetchJson<DayData>(`${DATA_DIR}/${date}.json`);
+}
+
+/** Element-wise sum of several series; null if any region is missing that interval. */
+function sumSeries(series: (number | null)[][]): (number | null)[] {
+  const len = series[0]?.length ?? 0;
+  const out: (number | null)[] = [];
+  for (let i = 0; i < len; i++) {
+    let sum = 0;
+    let missing = false;
+    for (const s of series) {
+      const v = s[i];
+      if (v == null) {
+        missing = true;
+        break;
+      }
+      sum += v;
+    }
+    out.push(missing ? null : sum);
+  }
+  return out;
+}
+
+function sumMetric(metrics: Metric[]): Metric {
+  return {
+    intervals: metrics[0].intervals,
+    poe10: sumSeries(metrics.map((m) => m.poe10)),
+    poe50: sumSeries(metrics.map((m) => m.poe50)),
+    poe90: sumSeries(metrics.map((m) => m.poe90)),
+    actual: sumSeries(metrics.map((m) => m.actual)),
+  };
+}
+
+/**
+ * NEM-wide aggregate: sums each interval across all five regions for actuals
+ * and all three POE values. Summing percentiles assumes perfect correlation
+ * across regions and is statistically wrong — it is only a visual cue, not a
+ * true probabilistic band (see the caveat shown in the UI).
+ */
+export function buildNemRegion(regions: Record<Region, RegionData>): RegionData {
+  const list = REGIONS.map((r) => regions[r]);
+  return {
+    demand: sumMetric(list.map((r) => r.demand)),
+    rooftopPv: sumMetric(list.map((r) => r.rooftopPv)),
+  };
 }
