@@ -64,17 +64,48 @@ const HOUR_TICKS = ['03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00
 
 const TOOLTIP_WIDTH = 176;
 
-/** Dynamic y-domain: [min - pad, max + pad] with pad = 5% of (max - min). */
-function yDomain(metric: Metric): [number, number] {
+/** Round a range to a "nice" 1/2/5 × 10ⁿ value (Heckbert's algorithm). */
+function niceNum(range: number, round: boolean): number {
+  const exp = Math.floor(Math.log10(range || 1));
+  const frac = (range || 1) / 10 ** exp;
+  let nice: number;
+  if (round) {
+    if (frac < 1.5) nice = 1;
+    else if (frac < 3) nice = 2;
+    else if (frac < 7) nice = 5;
+    else nice = 10;
+  } else if (frac <= 1) nice = 1;
+  else if (frac <= 2) nice = 2;
+  else if (frac <= 5) nice = 5;
+  else nice = 10;
+  return nice * 10 ** exp;
+}
+
+/**
+ * Dynamic y-scale snapped to round numbers: [min - pad, max + pad] (pad = 5%
+ * of range) is widened to nice round bounds with evenly spaced round ticks.
+ * Series at or above zero never produce negative ticks (e.g. rooftop overnight).
+ */
+function yScale(metric: Metric): { domain: [number, number]; ticks: number[] } {
   const vals: number[] = [];
   for (const arr of [metric.poe10, metric.poe50, metric.poe90, metric.actual]) {
     for (const v of arr) if (v != null) vals.push(v);
   }
-  if (vals.length === 0) return [0, 1];
+  if (vals.length === 0) return { domain: [0, 1], ticks: [0, 1] };
+
   const min = Math.min(...vals);
   const max = Math.max(...vals);
   const pad = (max - min) * 0.05 || 1;
-  return [min - pad, max + pad];
+  let lo = min - pad;
+  const hi = max + pad;
+  if (min >= 0) lo = Math.max(0, lo);
+
+  const step = niceNum(niceNum(hi - lo, false) / 5, true);
+  const niceLo = Math.floor(lo / step) * step;
+  const niceHi = Math.ceil(hi / step) * step;
+  const ticks: number[] = [];
+  for (let v = niceLo; v <= niceHi + step * 0.5; v += step) ticks.push(Math.round(v));
+  return { domain: [niceLo, niceHi], ticks };
 }
 
 function fmt(v: number): string {
@@ -133,6 +164,7 @@ function ChartTooltip({ active, payload, unit }: ChartTooltipProps) {
 
 export default function ForecastChart({ title, unit, metric }: ForecastChartProps) {
   const data = buildData(metric);
+  const { domain, ticks } = yScale(metric);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
 
@@ -167,7 +199,9 @@ export default function ForecastChart({ title, unit, metric }: ForecastChartProp
               minTickGap={16}
             />
             <YAxis
-              domain={yDomain(metric)}
+              domain={domain}
+              ticks={ticks}
+              tickFormatter={(v: number) => v.toLocaleString('en-AU')}
               tick={{ fontSize: 12 }}
               width={56}
               allowDecimals={false}
