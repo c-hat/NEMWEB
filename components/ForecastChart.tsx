@@ -48,13 +48,21 @@ function buildData(metric: Metric): ChartPoint[] {
   });
 }
 
-const BAND_COLOR = '#60a5fa';
-const POE50_COLOR = '#1d4ed8';
-const ACTUAL_COLOR = '#dc2626';
+const BAND_COLOR = '#c4b59a';
+const POE50_COLOR = '#3a3833';
+const ACTUAL_COLOR = '#c0552d';
+const GRID_COLOR = '#e3ddd0';
+
+/** Small monospace axis ticks, matching the OE-style numeric readouts. */
+const AXIS_TICK = {
+  fontSize: 11,
+  fill: '#6f6a60',
+  fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+};
 
 /** Delta colour when the actual falls outside the POE10–POE90 band. */
-const DELTA_ACCENT = '#dc2626';
-const DELTA_NEUTRAL = '#64748b';
+const DELTA_ACCENT = '#c0552d';
+const DELTA_NEUTRAL = '#6f6a60';
 
 /** Shared id so hovering one chart syncs the crosshair/tooltip on the other. */
 const SYNC_ID = 'nemweb-forecast';
@@ -181,7 +189,9 @@ export default function ForecastChart({ title, unit, metric }: ForecastChartProp
 
   return (
     <div className="chart-card">
-      <h3>{title}</h3>
+      <h3>
+        {title} <span className="chart-unit">{unit}</span>
+      </h3>
       <div className="chart-body" ref={bodyRef}>
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart
@@ -189,37 +199,40 @@ export default function ForecastChart({ title, unit, metric }: ForecastChartProp
             syncId={SYNC_ID}
             margin={{ top: 8, right: 16, bottom: 8, left: 8 }}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <CartesianGrid strokeDasharray="1 4" stroke={GRID_COLOR} vertical={false} />
             <XAxis
               dataKey="time"
               ticks={HOUR_TICKS}
               interval={0}
               tickFormatter={(v: string) => v.slice(0, 2)}
-              tick={{ fontSize: 12 }}
+              tick={AXIS_TICK}
+              tickLine={false}
+              axisLine={{ stroke: GRID_COLOR }}
               minTickGap={16}
             />
             <YAxis
               domain={domain}
               ticks={ticks}
               tickFormatter={(v: number) => v.toLocaleString('en-AU')}
-              tick={{ fontSize: 12 }}
-              width={56}
+              tick={AXIS_TICK}
+              tickLine={false}
+              axisLine={false}
+              width={52}
               allowDecimals={false}
-              label={{ value: unit, angle: -90, position: 'insideLeft', style: { fontSize: 12 } }}
             />
             <Tooltip
               content={<ChartTooltip unit={unit} />}
               position={{ x: tooltipX, y: 8 }}
               isAnimationActive={false}
             />
-            <Legend />
+            <Legend wrapperStyle={{ fontSize: 12, paddingTop: 4 }} iconType="plainline" />
             <Area
               type="monotone"
               dataKey="band"
               name="POE10–POE90 band"
               stroke="none"
               fill={BAND_COLOR}
-              fillOpacity={0.25}
+              fillOpacity={0.45}
               connectNulls={false}
               isAnimationActive={false}
               activeDot={false}
@@ -229,7 +242,7 @@ export default function ForecastChart({ title, unit, metric }: ForecastChartProp
               dataKey="poe50"
               name="POE50 (forecast)"
               stroke={POE50_COLOR}
-              strokeWidth={2}
+              strokeWidth={1.5}
               dot={false}
               connectNulls={false}
               isAnimationActive={false}
@@ -239,7 +252,7 @@ export default function ForecastChart({ title, unit, metric }: ForecastChartProp
               dataKey="actual"
               name="Actual"
               stroke={ACTUAL_COLOR}
-              strokeWidth={2}
+              strokeWidth={1.5}
               dot={false}
               connectNulls={false}
               isAnimationActive={false}
