@@ -233,6 +233,56 @@ body {
 
 .chart-card h3 {
   margin: 0 0 6px 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chart-card h3 .chart-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.live-badge {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.live-badge.stale {
+  color: var(--muted);
+}
+
+.live-badge .live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: live-pulse 2s ease-in-out infinite;
+}
+
+.live-badge.stale .live-dot {
+  background: var(--muted);
+  animation: none;
+}
+
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .chart-card h3 .chart-unit {

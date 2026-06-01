@@ -109,6 +109,15 @@ export function fetchDay(date: string): Promise<DayData> {
   return fetchJson<DayData>(`${DATA_DIR}/${date}.json`);
 }
 
+/**
+ * The in-progress trading day's forecast plume (actual arrays empty). Written
+ * by the daily ingest as `today.json`; absent until the first run produces it,
+ * in which case this rejects and the app falls back to the latest dated day.
+ */
+export function fetchToday(): Promise<DayData> {
+  return fetchJson<DayData>(`${DATA_DIR}/today.json`);
+}
+
 /** One day in the demand forecast-error rankings. */
 export interface RankingEntry {
   date: string;
