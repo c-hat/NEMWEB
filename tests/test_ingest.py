@@ -24,7 +24,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "ingest"))
 
 from nemweb import LocalSource, HttpSource, make_source  # noqa: E402
-from ingest import build_day_payload, ingest_day  # noqa: E402
+from ingest import build_day_payload, build_today_payload, ingest_day  # noqa: E402
 
 FIXTURES = _ROOT / "tests" / "fixtures" / "nemweb"
 TRADING_DAY = date(2026, 5, 28)
@@ -96,6 +96,23 @@ def test_region_absent_from_rooftop_is_all_null():
     assert all(v is None for v in tas["rooftopPv"]["actual"])
     # ...but its demand series is still populated.
     assert tas["demand"]["poe50"][0] is not None
+
+
+def test_today_payload_has_forecast_but_empty_actuals():
+    # today.json carries the same shape as a dated file so the frontend loads
+    # it identically, but actuals are left empty (filled live from the Worker).
+    p = build_today_payload(TRADING_DAY, LocalSource(FIXTURES))
+    assert p["tradingDate"] == "2026-05-28"
+    assert p["forecastIssuedAt"] == "2026-05-27T15:30+10:00"
+    assert set(p["regions"]) == {"NSW1", "VIC1", "QLD1", "SA1", "TAS1"}
+    nsw = p["regions"]["NSW1"]
+    # Forecast plume is populated for both metrics...
+    assert nsw["demand"]["poe50"][0] == 6300.0
+    assert nsw["demand"]["poe10"][0] > nsw["demand"]["poe50"][0] > nsw["demand"]["poe90"][0]
+    assert nsw["rooftopPv"]["poe50"][24] > 1000.0
+    # ...but every actual slot is null, for both metrics, all 48 intervals.
+    assert nsw["demand"]["actual"] == [None] * 48
+    assert nsw["rooftopPv"]["actual"] == [None] * 48
 
 
 def test_ingest_day_writes_outputs():

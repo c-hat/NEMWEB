@@ -56,8 +56,13 @@ jobs:
 
       - name: Run ingest against live NEMWEB
         working-directory: ingest
+        # --today also writes today.json: the forecast plume for the in-progress
+        # trading day (today, AEST). At the 03:00 AEST run the D-1 16:00 forecast
+        # for today is already published, so today.json is ready for the live
+        # overlay before visitors arrive. Live actuals are layered in client-side
+        # from the Cloudflare Worker, not baked into the file.
         run: |
-          uv run python ingest.py ${{ steps.cmd.outputs.args }} \
+          uv run python ingest.py ${{ steps.cmd.outputs.args }} --today \
             --out ../public/data --verbose
 
       - name: Commit data
