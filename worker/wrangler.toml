@@ -1,0 +1,8 @@
+# Cloudflare Worker config for nemweb-proxy.
+# Deploy with `npm run deploy` from this directory (see README.md).
+name = "nemweb-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+
+# OE_API_KEY is a SECRET and must NOT live here. Set it once per environment:
+#   npx wrangler secret put OE_API_KEY
