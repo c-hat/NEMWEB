@@ -82,19 +82,11 @@ function parsePoints(body: any): Point[] {
 }
 
 async function oeDemand(env: Env, region: string, from: string, to: string): Promise<Point[]> {
-  const url = oeDemandUrl(region, from, to);
-  const res = await fetch(url, { headers: { authorization: `Bearer ${env.OE_API_KEY}` } });
-  if (!res.ok) {
-    // TEMP DEBUG: capture upstream status/body to confirm the OE request shape.
-    // The API key travels as a header and is NOT part of `url`, so nothing
-    // secret is captured. Remove once oeDemandUrl/parsePoints are verified.
-    const body = (await res.text()).slice(0, 400);
-    const err = new Error(res.status === 401 || res.status === 403 ? "oe-auth" : "oe-upstream") as Error & {
-      debug?: unknown;
-    };
-    err.debug = { status: res.status, url, body };
-    throw err;
-  }
+  const res = await fetch(oeDemandUrl(region, from, to), {
+    headers: { authorization: `Bearer ${env.OE_API_KEY}` },
+  });
+  if (res.status === 401 || res.status === 403) throw new Error("oe-auth");
+  if (!res.ok) throw new Error("oe-upstream");
   return parsePoints(await res.json());
 }
 
@@ -130,16 +122,6 @@ export default {
       return jsonResponse({ error: "region, from and to are required" }, 400, headers);
     }
 
-    // TEMP DEBUG: `?debug=raw` dumps OE's raw response (single region) so the
-    // success-response shape can be confirmed against parsePoints. Remove later.
-    if (url.searchParams.get("debug") === "raw" && region !== "NEM") {
-      const res = await fetch(oeDemandUrl(region, from, to), {
-        headers: { authorization: `Bearer ${env.OE_API_KEY}` },
-      });
-      const sample = (await res.text()).slice(0, 900);
-      return jsonResponse({ status: res.status, sample }, 200, headers);
-    }
-
     const cache = caches.default;
     const cacheKey = new Request(url.toString());
     const hit = await cache.match(cacheKey);
@@ -155,7 +137,7 @@ export default {
       });
       ctx.waitUntil(cache.put(cacheKey, fresh.clone()));
       return withHeaders(fresh, headers);
-    } catch (e) {
+    } catch {
       // Upstream failure: serve last-known cached data if we have any, flagged stale.
       const stale = await cache.match(cacheKey);
       if (stale) {
@@ -163,10 +145,8 @@ export default {
         out.headers.set("X-Stale", "true");
         return out;
       }
-      // TEMP DEBUG: surface upstream status/url/body (no API key) so the OE
-      // request shape can be confirmed. Revert to a bare message afterwards.
-      const debug = (e as { debug?: unknown })?.debug ?? String((e as Error)?.message ?? e);
-      return jsonResponse({ error: "upstream unavailable", debug }, 502, headers);
+      // Never echo the OE key or upstream URL in errors.
+      return jsonResponse({ error: "upstream unavailable" }, 502, headers);
     }
   },
 };
