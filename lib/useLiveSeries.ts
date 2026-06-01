@@ -14,6 +14,18 @@ type Fetcher = (region: string, from: string, to: string) => Promise<LiveResult>
 
 const PUBLISH_LAG_MS = 40 * 1000; // align polls ~40s past the interval boundary
 
+/** Roughly daylight in AEST — used to skip rooftop polling overnight (it's 0). */
+function isAestDaylight(): boolean {
+  const h = Number(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Australia/Brisbane',
+      hour: '2-digit',
+      hourCycle: 'h23',
+    }).format(new Date()),
+  );
+  return h >= 5 && h < 20;
+}
+
 export interface LiveSeriesState {
   points: LivePoint[];
   /** Epoch ms of the last successful fresh (non-stale) fetch, or null. */
@@ -35,6 +47,8 @@ function useLiveSeries(
   fetcher: Fetcher,
   pollMs: number,
   staleMs: number,
+  /** Optional gate; when it returns false, scheduled polls are skipped (e.g. rooftop overnight). */
+  activeGuard?: () => boolean,
 ): LiveSeriesState {
   const [points, setPoints] = useState<LivePoint[]>([]);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
@@ -67,7 +81,11 @@ function useLiveSeries(
 
     async function poll(initial: boolean) {
       if (cancelled) return;
-      const to = aestISO();
+      // Skip scheduled polls outside the active window (initial backfill always runs).
+      if (!initial && activeGuard && !activeGuard()) return;
+      // Floor `to` to the poll boundary so every visitor in a window sends an
+      // identical request — the edge cache can then be shared (quota safety).
+      const to = aestISO(new Date(Math.floor(Date.now() / pollMs) * pollMs));
       const last = pointsRef.current[pointsRef.current.length - 1];
       const from =
         initial || !last
@@ -122,7 +140,7 @@ function useLiveSeries(
       timer.current = null;
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [region, active, todayDate, fetcher, pollMs]);
+  }, [region, active, todayDate, fetcher, pollMs, activeGuard]);
 
   // Re-evaluate staleness on a timer so the badge flips even between polls.
   useEffect(() => {
@@ -142,7 +160,11 @@ export function useLiveDemand(region: string, active: boolean, todayDate: string
   return useLiveSeries(region, active, todayDate, fetchLiveDemand, 5 * 60_000, 10 * 60_000);
 }
 
-/** Live 30-minute rooftop PV: polls every 30 min, stale after >35 min without a fresh fetch. */
+/**
+ * Live rooftop PV: 5-minute series (OE serves native 30-min ASEFS2 gap-filled
+ * to 5-min). Polls every 5 min in daylight only; stale after >10 min. Note the
+ * data inherently trails real time by AEMO's ~30-min publish lag.
+ */
 export function useLiveRooftop(region: string, active: boolean, todayDate: string): LiveSeriesState {
-  return useLiveSeries(region, active, todayDate, fetchLiveRooftop, 30 * 60_000, 35 * 60_000);
+  return useLiveSeries(region, active, todayDate, fetchLiveRooftop, 5 * 60_000, 10 * 60_000, isAestDaylight);
 }

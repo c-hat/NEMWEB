@@ -1,0 +1,43 @@
+name: deploy-worker
+
+# Deploys the Cloudflare Worker (worker/) whenever its source changes on main,
+# or on manual dispatch. Removes the need to run `wrangler deploy` locally.
+#
+# Requires a repository secret CLOUDFLARE_API_TOKEN (Settings → Secrets and
+# variables → Actions) with "Edit Cloudflare Workers" permission. The OE_API_KEY
+# Worker secret is set once via `wrangler secret put` and persists across
+# deploys — it does not need to be in CI.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "worker/**"
+      - ".github/workflows/deploy-worker.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install worker deps
+        working-directory: worker
+        run: npm ci
+
+      - name: Deploy
+        working-directory: worker
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
