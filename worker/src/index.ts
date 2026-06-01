@@ -19,11 +19,9 @@
  *   For NEM we fan out to the five regions and sum server-side, so the
  *   aggregate costs a single shared cache entry, not five.
  *
- * NOTE: the /demand request shape was verified against live OE. The /rooftop
- * shape follows OE's documented v4 `/data/network` power + fueltech convention
- * but could not be verified from the build environment. Confirm with a live
- * curl (use `?debug=raw` to inspect the upstream body) and, if it differs,
- * adjust ONLY that metric's `url`/`parse` in SPECS below.
+ * Both request shapes are verified against live OE. `?debug=raw` (single
+ * region) returns the truncated upstream body if OE's schema ever shifts and a
+ * SPECS `url`/`parse` needs re-checking.
  */
 
 export interface Env {
@@ -103,14 +101,17 @@ const SPECS: Record<string, MetricSpec> = {
     parse: (body) => rowsToPoints(body?.data?.[0]?.results?.[0]?.data ?? []),
   },
   // 30-minute rooftop PV. Power grouped by fueltech; pick the solar_rooftop
-  // series. Native 30-min cadence (interval=30m), not the 5-min gap-fill.
+  // series. OE's data endpoint has no 30m interval (only 5m/1h/...), so we
+  // request 5m and downsample to the :00/:30 marks — which coincide with the
+  // native AEMO ASEFS2 30-minute readings (OE's 5m rooftop is gap-filled
+  // between them), giving the underlying cadence rather than interpolated values.
   rooftop: {
     metric: "rooftop",
     interval: "30m",
     unit: "MW",
     ttl: 1500,
     url: (region, from, to) =>
-      `${OE_BASE}/v4/data/network/NEM?metrics=power&interval=30m` +
+      `${OE_BASE}/v4/data/network/NEM?metrics=power&interval=5m` +
       `&primary_grouping=network_region&secondary_grouping=fueltech` +
       `&network_region=${region}&${rangeParams(from, to)}`,
     parse: (body) => {
@@ -119,7 +120,11 @@ const SPECS: Record<string, MetricSpec> = {
         results.find((r) =>
           /rooftop/i.test(String(r?.columns?.fueltech ?? r?.columns?.fueltech_id ?? r?.name ?? "")),
         ) ?? results[0];
-      return rowsToPoints(pick?.data ?? []);
+      const onHalfHour = (ts: string) => {
+        const m = ts.match(/T\d{2}:(\d{2})/);
+        return !m || m[1] === "00" || m[1] === "30";
+      };
+      return rowsToPoints(pick?.data ?? []).filter((p) => onHalfHour(p.ts));
     },
   },
 };
