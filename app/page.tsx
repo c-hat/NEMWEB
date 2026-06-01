@@ -17,7 +17,7 @@ import {
   type Rankings,
   type SelectableRegion,
 } from '@/lib/data';
-import { useLiveDemand } from '@/lib/useLiveDemand';
+import { useLiveDemand, useLiveRooftop } from '@/lib/useLiveSeries';
 
 export default function Home() {
   const [dates, setDates] = useState<string[]>([]);
@@ -161,6 +161,7 @@ export default function Home() {
   // The hook polls the Worker for 5-minute demand; it no-ops when inactive.
   const isLive = !!todayDate && selectedDate === todayDate && !!todayData;
   const liveDemand = useLiveDemand(region, isLive, todayDate ?? '');
+  const liveRooftop = useLiveRooftop(region, isLive, todayDate ?? '');
 
   // Top demand-error days for the currently selected region.
   const rankingList = rankings?.regions[region] ?? [];
@@ -288,6 +289,11 @@ export default function Home() {
             title={`${REGION_LABELS[region]} — Rooftop PV`}
             unit="MW"
             metric={regionData.rooftopPv}
+            liveActual={isLive ? liveRooftop.points : undefined}
+            live={isLive}
+            stale={liveRooftop.stale}
+            lastUpdated={liveRooftop.lastUpdated}
+            liveStep
           />
           {region === 'NEM' && (
             <p className="caveat">

@@ -42,10 +42,11 @@ deployed under a repository subpath (see below). The ingest pipeline in
 
 ### Live "today" overlay
 
-When `today.json` exists and today (AEST) is selected, the demand chart overlays
-**live 5-minute actuals** on the forecast plume, polled through the Cloudflare
-Worker proxy in `worker/` (which fronts the OpenElectricity API). The chart
-shows a LIVE badge; polling pauses when the tab is hidden and resumes on focus.
+When `today.json` exists and today (AEST) is selected, the charts overlay
+**live actuals** on the forecast plumes, polled through the Cloudflare Worker
+proxy in `worker/` (which fronts the OpenElectricity API): demand as a dense
+5-minute line, rooftop PV as 30-minute step marks. Each chart shows a
+LIVE/STALE badge; polling pauses when the tab is hidden and resumes on focus.
 Past days are unaffected and never poll.
 
 Caveats:
@@ -55,11 +56,13 @@ Caveats:
    plumes are calibrated to `DEMANDOPERATIONALACTUAL`, defined slightly
    differently — so the live line sits close to, but not exactly on, the
    half-hourly operational actuals.
-2. **Third-party dependency.** The live view depends on the OpenElectricity API
+2. **Rooftop cadence is 30-minute.** Rooftop PV actuals are served at their
+   native AEMO ASEFS2 resolution (30 min), not OE's 5-minute gap-filled values.
+   The step marks reflect this underlying cadence.
+3. **Third-party dependency.** The live view depends on the OpenElectricity API
    via the Worker. If OE is unavailable the view degrades to a STALE state
    (last-known data); the historical view is unaffected.
 
-Rooftop PV live actuals (native 30-minute cadence) are a planned follow-up.
 The Worker URL is a build-time constant (`NEXT_PUBLIC_WORKER_URL`, defaulting to
 the deployed proxy); see `worker/README.md`.
 

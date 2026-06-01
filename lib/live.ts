@@ -51,17 +51,28 @@ export function startOfAestDay(date: string): string {
   return `${date}T00:00:00+10:00`;
 }
 
-/** Fetch 5-minute demand for [from, to] via the Worker. Throws on network/HTTP error. */
-export async function fetchLiveDemand(
+/** Fetch a live series for [from, to] via the Worker. Throws on network/HTTP error. */
+async function fetchLive(
+  kind: 'demand' | 'rooftop',
   region: string,
   from: string,
   to: string,
 ): Promise<LiveResult> {
   const url =
-    `${WORKER_URL}/demand?region=${encodeURIComponent(region)}` +
+    `${WORKER_URL}/${kind}?region=${encodeURIComponent(region)}` +
     `&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
   const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`worker ${res.status}`);
   const body = (await res.json()) as { points?: LivePoint[] };
   return { points: body.points ?? [], stale: res.headers.get('X-Stale') === 'true' };
+}
+
+/** 5-minute operational demand. */
+export function fetchLiveDemand(region: string, from: string, to: string): Promise<LiveResult> {
+  return fetchLive('demand', region, from, to);
+}
+
+/** 30-minute rooftop PV (native ASEFS2 cadence). */
+export function fetchLiveRooftop(region: string, from: string, to: string): Promise<LiveResult> {
+  return fetchLive('rooftop', region, from, to);
 }

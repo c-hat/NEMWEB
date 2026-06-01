@@ -12,13 +12,15 @@ A thin edge-cached proxy between the NEMWEB tracker frontend and the
   regardless of how many tabs are open. Workers' own free tier is 100k
   req/day — not a concern.
 
-## Endpoint (current phase)
+## Endpoints
 
 ```
-GET /demand?region={NSW1|VIC1|QLD1|SA1|TAS1|NEM}&from={ISO}&to={ISO}
+GET /demand?region={NSW1|VIC1|QLD1|SA1|TAS1|NEM}&from={ISO}&to={ISO}   # 5-min demand
+GET /rooftop?region=...&from=...&to=...                                  # 30-min rooftop PV
 ```
 
-Returns 5-minute operational demand for the range:
+Returns 5-minute operational demand for the range (rooftop is identical with
+`"metric":"rooftop"`, `"interval":"30m"`):
 
 ```json
 {
@@ -32,13 +34,15 @@ Returns 5-minute operational demand for the range:
 
 - `region=NEM` fans out to the five regions and sums server-side, so the
   aggregate is a single shared cache entry.
-- Cache TTL is 240s (just under the frontend's 5-min poll), so each interval
-  triggers at most one OE call no matter how many visitors.
+- Cache TTL is 240s for `/demand` and 1500s for `/rooftop` (each just under its
+  poll cycle), so an interval triggers at most one OE call no matter how many
+  visitors.
 - On an OE 5xx/timeout, the last cached response is served with an
   `X-Stale: true` header. On 401/403 (key problem) it returns `502` and logs —
   the OE key and upstream URL are never echoed in responses.
-
-`/rooftop` (30-min) is a deliberate follow-up; see the project task.
+- `&debug=raw` (single region) returns the truncated raw upstream body for
+  shape-checking. Useful because the `/demand` request was verified against
+  live OE but `/rooftop` was not — see "Verify" below.
 
 ## Deploy
 
@@ -77,21 +81,32 @@ npm run deploy
 `deploy` prints the Worker URL, e.g.
 `https://nemweb-proxy.<your-account>.workers.dev`.
 
-### Verify before wiring the frontend
+### Verify
+
+`/demand` is verified against live OE. `/rooftop` is not — check it after deploy
+(encode the `+` in the offset as `%2B`):
 
 ```bash
+# demand (known good)
 curl "https://nemweb-proxy.<account>.workers.dev/demand?region=NSW1\
-&from=2026-06-01T00:00:00+10:00&to=2026-06-01T00:30:00+10:00"
+&from=2026-06-01T00:00:00%2B10:00&to=2026-06-01T00:30:00%2B10:00"
+
+# rooftop — expect a non-empty points array during daylight
+curl "https://nemweb-proxy.<account>.workers.dev/rooftop?region=NSW1\
+&from=2026-06-01T00:00:00%2B10:00&to=2026-06-01T12:00:00%2B10:00"
 ```
 
-You should get JSON with a non-empty `points` array. If `points` is empty or
-the request 502s with an auth error, the OE request shape needs adjusting —
-edit **only** `oeDemandUrl` and `parsePoints` in `src/index.ts` to match the
-live OE response, then redeploy. (The shape in the code follows OE's documented
-v4 convention but could not be verified offline.)
+If `/rooftop` returns an empty `points` array (or 502s), inspect the upstream
+shape and adjust **only** the `rooftop` entry's `url`/`parse` in `SPECS`
+(`src/index.ts`), then redeploy:
 
-**Then send the Worker URL back** — it becomes a build-time constant in the
-frontend (`NEXT_PUBLIC_WORKER_URL`), which is the next step.
+```bash
+curl "https://nemweb-proxy.<account>.workers.dev/rooftop?region=NSW1\
+&from=2026-06-01T00:00:00%2B10:00&to=2026-06-01T12:00:00%2B10:00&debug=raw"
+```
+
+The Worker URL is a build-time constant in the frontend
+(`NEXT_PUBLIC_WORKER_URL`).
 
 ## CORS
 
