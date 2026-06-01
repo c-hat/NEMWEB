@@ -105,6 +105,29 @@ const DELTA_NEUTRAL = '#6f6a60';
 /** Shared id so hovering one chart syncs the crosshair/tooltip on the other. */
 const SYNC_ID = 'nemweb-forecast';
 
+/**
+ * Sync tooltips across charts by nearest x-value (minutes), not array index.
+ * The demand (5-min) and rooftop (30-min) charts have different point
+ * densities, so index-based sync would point at the wrong time; matching on the
+ * `t` value keeps the crosshair on the same moment in both charts.
+ */
+function syncByNearestValue(ticks: any, data: any): number {
+  const target = Number(data?.activeLabel);
+  if (!Array.isArray(ticks) || ticks.length === 0 || Number.isNaN(target)) {
+    return data?.activeTooltipIndex ?? -1;
+  }
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < ticks.length; i++) {
+    const dist = Math.abs(Number(ticks[i]?.value) - target);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = i;
+    }
+  }
+  return best;
+}
+
 /** X-axis ticks every 3 hours, as minutes-of-day (03:00 … 24:00). */
 const HOUR_TICKS = [180, 360, 540, 720, 900, 1080, 1260, 1440];
 
@@ -274,7 +297,12 @@ export default function ForecastChart({
       </h3>
       <div className="chart-body" ref={bodyRef}>
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={data} syncId={SYNC_ID} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
+          <ComposedChart
+            data={data}
+            syncId={SYNC_ID}
+            syncMethod={syncByNearestValue}
+            margin={{ top: 8, right: 16, bottom: 8, left: 8 }}
+          >
             <CartesianGrid strokeDasharray="1 4" stroke={GRID_COLOR} vertical={false} />
             <XAxis
               dataKey="t"
