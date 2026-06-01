@@ -1,13 +1,20 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { aestISO, fetchLiveDemand, startOfAestDay, type LivePoint } from './live';
+import {
+  aestISO,
+  fetchLiveDemand,
+  fetchLiveRooftop,
+  startOfAestDay,
+  type LivePoint,
+  type LiveResult,
+} from './live';
 
-const POLL_MS = 5 * 60 * 1000; // demand publishes every 5 minutes
+type Fetcher = (region: string, from: string, to: string) => Promise<LiveResult>;
+
 const PUBLISH_LAG_MS = 40 * 1000; // align polls ~40s past the interval boundary
-const STALE_MS = 10 * 60 * 1000; // >10 min without a fresh fetch → stale
 
-export interface LiveDemandState {
+export interface LiveSeriesState {
   points: LivePoint[];
   /** Epoch ms of the last successful fresh (non-stale) fetch, or null. */
   lastUpdated: number | null;
@@ -15,13 +22,20 @@ export interface LiveDemandState {
 }
 
 /**
- * Polls the Worker for the current trading day's 5-minute demand and appends
- * new intervals. Backfills 00:00→now on activation, then polls every 5 minutes
+ * Polls the Worker for the current trading day's actuals and appends new
+ * intervals. Backfills 00:00→now on activation, then polls every `pollMs`
  * aligned to ~40s past each boundary. Polling pauses while the tab is hidden
  * and catches up immediately on return. On error/stale it keeps the last-known
- * series and flags `stale`.
+ * series and flags `stale` (after `staleMs` without a fresh fetch).
  */
-export function useLiveDemand(region: string, active: boolean, todayDate: string): LiveDemandState {
+function useLiveSeries(
+  region: string,
+  active: boolean,
+  todayDate: string,
+  fetcher: Fetcher,
+  pollMs: number,
+  staleMs: number,
+): LiveSeriesState {
   const [points, setPoints] = useState<LivePoint[]>([]);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [stale, setStale] = useState(false);
@@ -58,9 +72,9 @@ export function useLiveDemand(region: string, active: boolean, todayDate: string
       const from =
         initial || !last
           ? startOfAestDay(todayDate)
-          : aestISO(new Date(Date.parse(last.ts) + POLL_MS));
+          : aestISO(new Date(Date.parse(last.ts) + pollMs));
       try {
-        const { points: pts, stale: st } = await fetchLiveDemand(region, from, to);
+        const { points: pts, stale: st } = await fetcher(region, from, to);
         if (cancelled) return;
         mergeAppend(pts);
         if (st) {
@@ -79,7 +93,7 @@ export function useLiveDemand(region: string, active: boolean, todayDate: string
     function schedule() {
       if (cancelled || document.hidden) return;
       const now = Date.now();
-      const next = Math.ceil(now / POLL_MS) * POLL_MS + PUBLISH_LAG_MS;
+      const next = Math.ceil(now / pollMs) * pollMs + PUBLISH_LAG_MS;
       timer.current = setTimeout(
         () => {
           void poll(false).then(schedule);
@@ -108,17 +122,27 @@ export function useLiveDemand(region: string, active: boolean, todayDate: string
       timer.current = null;
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [region, active, todayDate]);
+  }, [region, active, todayDate, fetcher, pollMs]);
 
   // Re-evaluate staleness on a timer so the badge flips even between polls.
   useEffect(() => {
     if (!active) return;
     const id = setInterval(() => {
       const lu = lastUpdatedRef.current;
-      if (lu != null) setStale(Date.now() - lu > STALE_MS);
+      if (lu != null) setStale(Date.now() - lu > staleMs);
     }, 30 * 1000);
     return () => clearInterval(id);
-  }, [active]);
+  }, [active, staleMs]);
 
   return { points, lastUpdated, stale };
+}
+
+/** Live 5-minute demand: polls every 5 min, stale after >10 min without a fresh fetch. */
+export function useLiveDemand(region: string, active: boolean, todayDate: string): LiveSeriesState {
+  return useLiveSeries(region, active, todayDate, fetchLiveDemand, 5 * 60_000, 10 * 60_000);
+}
+
+/** Live 30-minute rooftop PV: polls every 30 min, stale after >35 min without a fresh fetch. */
+export function useLiveRooftop(region: string, active: boolean, todayDate: string): LiveSeriesState {
+  return useLiveSeries(region, active, todayDate, fetchLiveRooftop, 30 * 60_000, 35 * 60_000);
 }

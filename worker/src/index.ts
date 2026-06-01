@@ -10,15 +10,20 @@
  *      data, keeping us under OE's 500 req/day free-tier limit regardless of
  *      how many tabs are open.
  *
- * Endpoint (this phase): GET /demand?region={NSW1|...|NEM}&from={ISO}&to={ISO}
- *   → 5-minute operational demand for the range.
+ * Endpoints:
+ *   GET /demand?region={NSW1|...|NEM}&from={ISO}&to={ISO}
+ *     → 5-minute operational demand (DISPATCHREGIONSUM.TOTALDEMAND).
+ *   GET /rooftop?region=...&from=...&to=...
+ *     → 30-minute rooftop PV (native ASEFS2 cadence, not OE's 5-min gap-fill).
+ *
  *   For NEM we fan out to the five regions and sum server-side, so the
  *   aggregate costs a single shared cache entry, not five.
  *
- * NOTE: the exact OE request/response shape below could not be verified from
- * the build environment (docs were unreachable). It reflects the documented
- * v4 `/data/network` time-series convention. Confirm with the first live curl
- * and, if the path differs, adjust ONLY `oeDemandUrl` and `parsePoints`.
+ * NOTE: the /demand request shape was verified against live OE. The /rooftop
+ * shape follows OE's documented v4 `/data/network` power + fueltech convention
+ * but could not be verified from the build environment. Confirm with a live
+ * curl (use `?debug=raw` to inspect the upstream body) and, if it differs,
+ * adjust ONLY that metric's `url`/`parse` in SPECS below.
  */
 
 export interface Env {
@@ -27,7 +32,6 @@ export interface Env {
 
 const OE_BASE = "https://api.openelectricity.org.au";
 const REGIONS = ["NSW1", "VIC1", "QLD1", "SA1", "TAS1"];
-const DEMAND_TTL = 240; // seconds — just under the 5-min poll, so each cycle is at most one OE call
 
 // CORS allow-list. No wildcard: GitHub Pages origin + localhost (any port) for dev.
 const ALLOWED_ORIGIN = [/^https:\/\/c-hat\.github\.io$/, /^http:\/\/localhost(:\d+)?$/];
@@ -60,6 +64,8 @@ interface Point {
   value: number | null;
 }
 
+type Row = [string, number | null];
+
 // OE requires timezone-naive timestamps in network (AEST) time. Our inputs are
 // already AEST (+10:00), so strip the trailing offset (or a Z) and pass the
 // wall-clock part through unchanged.
@@ -67,27 +73,64 @@ function toNetworkNaive(iso: string): string {
   return iso.replace(/(Z|[+-]\d{2}:?\d{2})$/, "");
 }
 
-function oeDemandUrl(region: string, from: string, to: string): string {
-  return (
-    `${OE_BASE}/v4/market/network/NEM?metrics=demand&interval=5m` +
-    `&primary_grouping=network_region&network_region=${region}` +
-    `&date_start=${encodeURIComponent(toNetworkNaive(from))}&date_end=${encodeURIComponent(toNetworkNaive(to))}`
-  );
+function rangeParams(from: string, to: string): string {
+  return `date_start=${encodeURIComponent(toNetworkNaive(from))}&date_end=${encodeURIComponent(toNetworkNaive(to))}`;
 }
 
-// OE v4 time series: { data: [ { results: [ { data: [[ts, value], ...] } ] } ] }.
-function parsePoints(body: any): Point[] {
-  const rows: [string, number | null][] = body?.data?.[0]?.results?.[0]?.data ?? [];
+function rowsToPoints(rows: Row[]): Point[] {
   return rows.map(([ts, value]) => ({ ts, value: value ?? null }));
 }
 
-async function oeDemand(env: Env, region: string, from: string, to: string): Promise<Point[]> {
-  const res = await fetch(oeDemandUrl(region, from, to), {
+interface MetricSpec {
+  metric: string;
+  interval: string;
+  unit: string;
+  ttl: number; // edge-cache seconds; just under the poll cycle
+  url: (region: string, from: string, to: string) => string;
+  parse: (body: any) => Point[];
+}
+
+const SPECS: Record<string, MetricSpec> = {
+  // Verified against live OE: data[0].results[0].data = [[ts, value], ...].
+  demand: {
+    metric: "demand",
+    interval: "5m",
+    unit: "MW",
+    ttl: 240,
+    url: (region, from, to) =>
+      `${OE_BASE}/v4/market/network/NEM?metrics=demand&interval=5m` +
+      `&primary_grouping=network_region&network_region=${region}&${rangeParams(from, to)}`,
+    parse: (body) => rowsToPoints(body?.data?.[0]?.results?.[0]?.data ?? []),
+  },
+  // 30-minute rooftop PV. Power grouped by fueltech; pick the solar_rooftop
+  // series. Native 30-min cadence (interval=30m), not the 5-min gap-fill.
+  rooftop: {
+    metric: "rooftop",
+    interval: "30m",
+    unit: "MW",
+    ttl: 1500,
+    url: (region, from, to) =>
+      `${OE_BASE}/v4/data/network/NEM?metrics=power&interval=30m` +
+      `&primary_grouping=network_region&secondary_grouping=fueltech` +
+      `&network_region=${region}&${rangeParams(from, to)}`,
+    parse: (body) => {
+      const results: any[] = body?.data?.[0]?.results ?? [];
+      const pick =
+        results.find((r) =>
+          /rooftop/i.test(String(r?.columns?.fueltech ?? r?.columns?.fueltech_id ?? r?.name ?? "")),
+        ) ?? results[0];
+      return rowsToPoints(pick?.data ?? []);
+    },
+  },
+};
+
+async function oeFetch(env: Env, spec: MetricSpec, region: string, from: string, to: string): Promise<Point[]> {
+  const res = await fetch(spec.url(region, from, to), {
     headers: { authorization: `Bearer ${env.OE_API_KEY}` },
   });
   if (res.status === 401 || res.status === 403) throw new Error("oe-auth");
   if (!res.ok) throw new Error("oe-upstream");
-  return parsePoints(await res.json());
+  return spec.parse(await res.json());
 }
 
 /** Sum several regions' series by timestamp; an interval missing from any region is null. */
@@ -113,13 +156,23 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
 
     const url = new URL(request.url);
-    if (url.pathname !== "/demand") return jsonResponse({ error: "not found" }, 404, headers);
+    const spec = SPECS[url.pathname.slice(1)]; // "/demand" → "demand"
+    if (!spec) return jsonResponse({ error: "not found" }, 404, headers);
 
     const region = url.searchParams.get("region") ?? "";
     const from = url.searchParams.get("from") ?? "";
     const to = url.searchParams.get("to") ?? "";
     if ((region !== "NEM" && !REGIONS.includes(region)) || !from || !to) {
       return jsonResponse({ error: "region, from and to are required" }, 400, headers);
+    }
+
+    // Diagnostic: dump the raw upstream body (single region) to confirm shape.
+    // No API key is included (it travels as a header). Truncated.
+    if (url.searchParams.get("debug") === "raw" && region !== "NEM") {
+      const res = await fetch(spec.url(region, from, to), {
+        headers: { authorization: `Bearer ${env.OE_API_KEY}` },
+      });
+      return jsonResponse({ status: res.status, sample: (await res.text()).slice(0, 1200) }, 200, headers);
     }
 
     const cache = caches.default;
@@ -130,11 +183,13 @@ export default {
     try {
       const points =
         region === "NEM"
-          ? sumByTimestamp(await Promise.all(REGIONS.map((r) => oeDemand(env, r, from, to))))
-          : await oeDemand(env, region, from, to);
-      const fresh = jsonResponse({ region, metric: "demand", interval: "5m", unit: "MW", points }, 200, {
-        "cache-control": `max-age=${DEMAND_TTL}`,
-      });
+          ? sumByTimestamp(await Promise.all(REGIONS.map((r) => oeFetch(env, spec, r, from, to))))
+          : await oeFetch(env, spec, region, from, to);
+      const fresh = jsonResponse(
+        { region, metric: spec.metric, interval: spec.interval, unit: spec.unit, points },
+        200,
+        { "cache-control": `max-age=${spec.ttl}` },
+      );
       ctx.waitUntil(cache.put(cacheKey, fresh.clone()));
       return withHeaders(fresh, headers);
     } catch {

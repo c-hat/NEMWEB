@@ -27,6 +27,8 @@ interface ForecastChartProps {
   stale?: boolean;
   /** Epoch ms of the last fresh live fetch, for the badge text. */
   lastUpdated?: number | null;
+  /** Draw the live overlay as 30-min step marks rather than a continuous line. */
+  liveStep?: boolean;
 }
 
 interface ChartPoint {
@@ -227,6 +229,7 @@ export default function ForecastChart({
   live = false,
   stale = false,
   lastUpdated = null,
+  liveStep = false,
 }: ForecastChartProps) {
   const hasLive = (liveActual?.length ?? 0) > 0;
   const data = buildData(metric, liveActual);
@@ -334,12 +337,12 @@ export default function ForecastChart({
             />
             {hasLive && (
               <Line
-                type="monotone"
+                type={liveStep ? 'stepAfter' : 'monotone'}
                 dataKey="live"
-                name="Live actual (5-min)"
+                name={liveStep ? 'Live actual (30-min)' : 'Live actual (5-min)'}
                 stroke={ACTUAL_COLOR}
                 strokeWidth={1.5}
-                dot={false}
+                dot={liveStep ? { r: 1.5, fill: ACTUAL_COLOR } : false}
                 connectNulls={false}
                 isAnimationActive={false}
               />
