@@ -103,14 +103,17 @@ const SPECS: Record<string, MetricSpec> = {
     parse: (body) => rowsToPoints(body?.data?.[0]?.results?.[0]?.data ?? []),
   },
   // 30-minute rooftop PV. Power grouped by fueltech; pick the solar_rooftop
-  // series. Native 30-min cadence (interval=30m), not the 5-min gap-fill.
+  // series. OE's data endpoint has no 30m interval (only 5m/1h/...), so we
+  // request 5m and downsample to the :00/:30 marks — which coincide with the
+  // native AEMO ASEFS2 30-minute readings (OE's 5m rooftop is gap-filled
+  // between them), giving the underlying cadence rather than interpolated values.
   rooftop: {
     metric: "rooftop",
     interval: "30m",
     unit: "MW",
     ttl: 1500,
     url: (region, from, to) =>
-      `${OE_BASE}/v4/data/network/NEM?metrics=power&interval=30m` +
+      `${OE_BASE}/v4/data/network/NEM?metrics=power&interval=5m` +
       `&primary_grouping=network_region&secondary_grouping=fueltech` +
       `&network_region=${region}&${rangeParams(from, to)}`,
     parse: (body) => {
@@ -119,7 +122,11 @@ const SPECS: Record<string, MetricSpec> = {
         results.find((r) =>
           /rooftop/i.test(String(r?.columns?.fueltech ?? r?.columns?.fueltech_id ?? r?.name ?? "")),
         ) ?? results[0];
-      return rowsToPoints(pick?.data ?? []);
+      const onHalfHour = (ts: string) => {
+        const m = ts.match(/T\d{2}:(\d{2})/);
+        return !m || m[1] === "00" || m[1] === "30";
+      };
+      return rowsToPoints(pick?.data ?? []).filter((p) => onHalfHour(p.ts));
     },
   },
 };
