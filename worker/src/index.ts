@@ -19,11 +19,9 @@
  *   For NEM we fan out to the five regions and sum server-side, so the
  *   aggregate costs a single shared cache entry, not five.
  *
- * NOTE: the /demand request shape was verified against live OE. The /rooftop
- * shape follows OE's documented v4 `/data/network` power + fueltech convention
- * but could not be verified from the build environment. Confirm with a live
- * curl (use `?debug=raw` to inspect the upstream body) and, if it differs,
- * adjust ONLY that metric's `url`/`parse` in SPECS below.
+ * Both request shapes are verified against live OE. `?debug=raw` (single
+ * region) returns the truncated upstream body if OE's schema ever shifts and a
+ * SPECS `url`/`parse` needs re-checking.
  */
 
 export interface Env {

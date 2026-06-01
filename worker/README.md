@@ -20,7 +20,10 @@ GET /rooftop?region=...&from=...&to=...                                  # 30-mi
 ```
 
 Returns 5-minute operational demand for the range (rooftop is identical with
-`"metric":"rooftop"`, `"interval":"30m"`):
+`"metric":"rooftop"`, `"interval":"30m"`). Rooftop note: OE's data endpoint has
+no 30m interval, so the Worker requests `power` at 5m grouped by fueltech, picks
+the `solar_rooftop` series, and downsamples to the `:00`/`:30` marks (the native
+ASEFS2 readings — the 5m series is gap-filled between them).
 
 ```json
 {
@@ -41,8 +44,8 @@ Returns 5-minute operational demand for the range (rooftop is identical with
   `X-Stale: true` header. On 401/403 (key problem) it returns `502` and logs —
   the OE key and upstream URL are never echoed in responses.
 - `&debug=raw` (single region) returns the truncated raw upstream body for
-  shape-checking. Useful because the `/demand` request was verified against
-  live OE but `/rooftop` was not — see "Verify" below.
+  shape-checking, if OE's schema ever shifts. Both endpoints are verified
+  against live OE.
 
 ## Deploy
 
@@ -83,8 +86,8 @@ npm run deploy
 
 ### Verify
 
-`/demand` is verified against live OE. `/rooftop` is not — check it after deploy
-(encode the `+` in the offset as `%2B`):
+Both endpoints are verified against live OE. To re-check after a deploy (encode
+the `+` in the offset as `%2B`):
 
 ```bash
 # demand (known good)
@@ -96,9 +99,9 @@ curl "https://nemweb-proxy.<account>.workers.dev/rooftop?region=NSW1\
 &from=2026-06-01T00:00:00%2B10:00&to=2026-06-01T12:00:00%2B10:00"
 ```
 
-If `/rooftop` returns an empty `points` array (or 502s), inspect the upstream
-shape and adjust **only** the `rooftop` entry's `url`/`parse` in `SPECS`
-(`src/index.ts`), then redeploy:
+If an endpoint returns an empty `points` array (or 502s) after an OE schema
+change, inspect the upstream shape and adjust **only** that metric's
+`url`/`parse` in `SPECS` (`src/index.ts`), then redeploy:
 
 ```bash
 curl "https://nemweb-proxy.<account>.workers.dev/rooftop?region=NSW1\
