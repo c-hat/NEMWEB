@@ -53,6 +53,27 @@ npx wrangler secret put OE_API_KEY # paste the OE key when prompted
 npm run deploy
 ```
 
+### Headless / remote machine (no browser)
+
+`wrangler login` opens a browser via `xdg-open` and needs a localhost
+callback, so it fails on a headless box (`Missing file or directory:
+xdg-open`). Authenticate with an API token instead — no browser required:
+
+1. Cloudflare dashboard → **My Profile → API Tokens → Create Token →
+   "Edit Cloudflare Workers"** (or a custom token with *Account → Workers
+   Scripts → Edit*).
+2. Export it and deploy:
+
+```bash
+export CLOUDFLARE_API_TOKEN=your_token_here   # do not commit
+cd worker
+npm install
+npx wrangler whoami                # verifies the token
+npx wrangler secret put OE_API_KEY # paste the OE key
+npm run deploy
+```
+
+
 `deploy` prints the Worker URL, e.g.
 `https://nemweb-proxy.<your-account>.workers.dev`.
 

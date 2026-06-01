@@ -9,6 +9,7 @@ import {
   fetchIndex,
   fetchLatest,
   fetchRankings,
+  fetchToday,
   formatIssued,
   REGION_LABELS,
   SELECTABLE_REGIONS,
@@ -16,6 +17,7 @@ import {
   type Rankings,
   type SelectableRegion,
 } from '@/lib/data';
+import { useLiveDemand } from '@/lib/useLiveDemand';
 
 export default function Home() {
   const [dates, setDates] = useState<string[]>([]);
@@ -25,6 +27,10 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rankings, setRankings] = useState<Rankings | null>(null);
+  // today.json: the in-progress trading day's forecast plume (null until the
+  // ingest has produced it). Its trading date marks the "live" day.
+  const [todayData, setTodayData] = useState<DayData | null>(null);
+  const todayDate = todayData?.tradingDate ?? null;
 
   // Load the precomputed demand forecast-error rankings once (optional feature;
   // a failure just leaves the "Largest demand errors" menu empty).
@@ -39,16 +45,31 @@ export default function Home() {
     };
   }, []);
 
-  // Load the day index and the latest-day pointer once on mount.
+  // Load the day index, latest-day pointer, and today.json once on mount.
+  // today.json is optional: if present we default to it (live view); otherwise
+  // we fall back to the most recent dated day.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [index, latest] = await Promise.all([fetchIndex(), fetchLatest()]);
+        const [index, latest, today] = await Promise.all([
+          fetchIndex(),
+          fetchLatest(),
+          fetchToday().catch(() => null),
+        ]);
         if (cancelled) return;
         const ascending = index.map((e) => e.date);
-        setDates(ascending);
-        setSelectedDate(latest.date || ascending[ascending.length - 1] || '');
+        if (today) {
+          // today.json isn't in the index; append it so it stays navigable
+          // (otherwise picking "today" would snap to the latest dated day).
+          if (!ascending.includes(today.tradingDate)) ascending.push(today.tradingDate);
+          setTodayData(today);
+          setDates(ascending);
+          setSelectedDate(today.tradingDate);
+        } else {
+          setDates(ascending);
+          setSelectedDate(latest.date || ascending[ascending.length - 1] || '');
+        }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       }
@@ -58,9 +79,17 @@ export default function Home() {
     };
   }, []);
 
-  // Load the selected day's payload whenever the date changes.
+  // Load the selected day's payload whenever the date changes. Today is served
+  // from the already-loaded today.json (it has no dated file yet); past days
+  // are fetched as usual.
   useEffect(() => {
     if (!selectedDate) return;
+    if (todayDate && selectedDate === todayDate && todayData) {
+      setDay(todayData);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -80,7 +109,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [selectedDate]);
+  }, [selectedDate, todayDate, todayData]);
 
   const currentIndex = dates.indexOf(selectedDate);
   const hasPrev = currentIndex > 0;
@@ -127,6 +156,11 @@ export default function Home() {
     if (!day) return null;
     return region === 'NEM' ? buildNemRegion(day.regions) : day.regions[region];
   }, [day, region]);
+
+  // Live view is active only when today.json is loaded and today is selected.
+  // The hook polls the Worker for 5-minute demand; it no-ops when inactive.
+  const isLive = !!todayDate && selectedDate === todayDate && !!todayData;
+  const liveDemand = useLiveDemand(region, isLive, todayDate ?? '');
 
   // Top demand-error days for the currently selected region.
   const rankingList = rankings?.regions[region] ?? [];
@@ -245,6 +279,10 @@ export default function Home() {
             title={`${REGION_LABELS[region]} — Demand`}
             unit="MW"
             metric={regionData.demand}
+            liveActual={isLive ? liveDemand.points : undefined}
+            live={isLive}
+            stale={liveDemand.stale}
+            lastUpdated={liveDemand.lastUpdated}
           />
           <ForecastChart
             title={`${REGION_LABELS[region]} — Rooftop PV`}

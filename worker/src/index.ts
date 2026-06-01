@@ -60,11 +60,18 @@ interface Point {
   value: number | null;
 }
 
+// OE requires timezone-naive timestamps in network (AEST) time. Our inputs are
+// already AEST (+10:00), so strip the trailing offset (or a Z) and pass the
+// wall-clock part through unchanged.
+function toNetworkNaive(iso: string): string {
+  return iso.replace(/(Z|[+-]\d{2}:?\d{2})$/, "");
+}
+
 function oeDemandUrl(region: string, from: string, to: string): string {
   return (
     `${OE_BASE}/v4/market/network/NEM?metrics=demand&interval=5m` +
     `&primary_grouping=network_region&network_region=${region}` +
-    `&date_start=${encodeURIComponent(from)}&date_end=${encodeURIComponent(to)}`
+    `&date_start=${encodeURIComponent(toNetworkNaive(from))}&date_end=${encodeURIComponent(toNetworkNaive(to))}`
   );
 }
 

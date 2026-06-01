@@ -13,39 +13,75 @@ import {
   YAxis,
 } from 'recharts';
 import type { Metric } from '@/lib/data';
+import type { LivePoint } from '@/lib/live';
 
 interface ForecastChartProps {
   title: string;
   /** Y-axis unit label, e.g. "MW". */
   unit: string;
   metric: Metric;
+  /** Live 5-minute actuals to overlay (today only). */
+  liveActual?: LivePoint[];
+  /** Render the LIVE/STALE badge (today only). */
+  live?: boolean;
+  stale?: boolean;
+  /** Epoch ms of the last fresh live fetch, for the badge text. */
+  lastUpdated?: number | null;
 }
 
 interface ChartPoint {
+  /** Minutes since the trading day's 00:00 AEST (interval-ending; 30 … 1440). */
+  t: number;
+  /** "HH:MM" label for the tooltip. */
   time: string;
   /** Range [poe90 (low), poe10 (high)] for the shaded band; null if incomplete. */
   band: [number, number] | null;
   poe50: number | null;
   actual: number | null;
+  /** Live 5-minute actual (today only). */
+  live: number | null;
 }
 
-/** "2026-05-28T00:30+10:00" -> "00:30". Falls back to the raw string. */
-function timeLabel(iso: string): string {
-  const match = iso.match(/T(\d{2}:\d{2})/);
-  return match ? match[1] : iso;
+const PAD2 = (n: number) => String(n).padStart(2, '0');
+
+/** Minutes → "HH:MM" interval-ending label (1440 → "00:00"). */
+function minuteLabel(t: number): string {
+  return `${PAD2(Math.floor(t / 60) % 24)}:${PAD2(t % 60)}`;
 }
 
-function buildData(metric: Metric): ChartPoint[] {
-  return metric.intervals.map((iso, i) => {
+/**
+ * Merge the half-hourly forecast plume and any 5-minute live actuals onto a
+ * single numeric (minutes-of-day) axis. Forecast intervals land at 30, 60, …,
+ * 1440; live points at their 5-minute marks. Overlapping marks carry both.
+ */
+function buildData(metric: Metric, liveActual?: LivePoint[]): ChartPoint[] {
+  const dayStartMs = Date.parse(metric.intervals[0]) - 30 * 60_000;
+  const minutesOf = (iso: string) => Math.round((Date.parse(iso) - dayStartMs) / 60_000);
+
+  const byT = new Map<number, ChartPoint>();
+  const row = (t: number): ChartPoint => {
+    let r = byT.get(t);
+    if (!r) {
+      r = { t, time: minuteLabel(t), band: null, poe50: null, actual: null, live: null };
+      byT.set(t, r);
+    }
+    return r;
+  };
+
+  metric.intervals.forEach((iso, i) => {
+    const r = row(minutesOf(iso));
     const low = metric.poe90[i];
     const high = metric.poe10[i];
-    return {
-      time: timeLabel(iso),
-      band: low != null && high != null ? [low, high] : null,
-      poe50: metric.poe50[i],
-      actual: metric.actual[i],
-    };
+    r.band = low != null && high != null ? [low, high] : null;
+    r.poe50 = metric.poe50[i];
+    r.actual = metric.actual[i];
   });
+
+  if (liveActual) {
+    for (const p of liveActual) row(minutesOf(p.ts)).live = p.value;
+  }
+
+  return [...byT.values()].sort((a, b) => a.t - b.t);
 }
 
 const BAND_COLOR = '#c4b59a';
@@ -67,8 +103,8 @@ const DELTA_NEUTRAL = '#6f6a60';
 /** Shared id so hovering one chart syncs the crosshair/tooltip on the other. */
 const SYNC_ID = 'nemweb-forecast';
 
-/** Interval-ending labels shown on the x-axis: every 3 hours, no :30 suffix. */
-const HOUR_TICKS = ['03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00', '00:00'];
+/** X-axis ticks every 3 hours, as minutes-of-day (03:00 … 24:00). */
+const HOUR_TICKS = [180, 360, 540, 720, 900, 1080, 1260, 1440];
 
 const TOOLTIP_WIDTH = 176;
 
@@ -93,12 +129,14 @@ function niceNum(range: number, round: boolean): number {
  * Dynamic y-scale snapped to round numbers: [min - pad, max + pad] (pad = 5%
  * of range) is widened to nice round bounds with evenly spaced round ticks.
  * Series at or above zero never produce negative ticks (e.g. rooftop overnight).
+ * Live actuals are included so the scale fits them too.
  */
-function yScale(metric: Metric): { domain: [number, number]; ticks: number[] } {
+function yScale(metric: Metric, liveActual?: LivePoint[]): { domain: [number, number]; ticks: number[] } {
   const vals: number[] = [];
   for (const arr of [metric.poe10, metric.poe50, metric.poe90, metric.actual]) {
     for (const v of arr) if (v != null) vals.push(v);
   }
+  if (liveActual) for (const p of liveActual) if (p.value != null) vals.push(p.value);
   if (vals.length === 0) return { domain: [0, 1], ticks: [0, 1] };
 
   const min = Math.min(...vals);
@@ -130,17 +168,19 @@ interface ChartTooltipProps {
   unit: string;
 }
 
-/** Three/four-row tooltip: time, POE50, Actual, and Δ vs forecast. */
+/** Tooltip: time, POE50, Actual (live or settled), and Δ vs forecast. */
 function ChartTooltip({ active, payload, unit }: ChartTooltipProps) {
   if (!active || !payload || payload.length === 0) return null;
   const point = payload[0].payload;
-  const { poe50, actual, band, time } = point;
+  const { poe50, actual, live, band, time } = point;
+  const act = actual ?? live;
+  const isLive = actual == null && live != null;
 
   let delta: React.ReactNode = null;
-  if (poe50 != null && actual != null) {
-    const diff = actual - poe50;
+  if (poe50 != null && act != null) {
+    const diff = act - poe50;
     const pct = poe50 !== 0 ? (diff / poe50) * 100 : 0;
-    const outside = band ? actual > band[1] || actual < band[0] : false;
+    const outside = band ? act > band[1] || act < band[0] : false;
     const sign = diff >= 0 ? '+' : '';
     delta = (
       <div className="tt-row" style={{ color: outside ? DELTA_ACCENT : DELTA_NEUTRAL }}>
@@ -161,20 +201,40 @@ function ChartTooltip({ active, payload, unit }: ChartTooltipProps) {
         <span>POE50</span>
         <span>{poe50 == null ? '—' : `${fmt(poe50)} ${unit}`}</span>
       </div>
-      <div className="tt-row">
-        <span>Actual</span>
-        <span>{actual == null ? '—' : `${fmt(actual)} ${unit}`}</span>
-      </div>
+      {act != null && (
+        <div className="tt-row">
+          <span>{isLive ? 'Actual (live)' : 'Actual'}</span>
+          <span>{`${fmt(act)} ${unit}`}</span>
+        </div>
+      )}
       {delta}
     </div>
   );
 }
 
-export default function ForecastChart({ title, unit, metric }: ForecastChartProps) {
-  const data = buildData(metric);
-  const { domain, ticks } = yScale(metric);
+function agoText(lastUpdated: number | null | undefined, now: number): string {
+  if (lastUpdated == null) return 'connecting…';
+  const mins = Math.floor((now - lastUpdated) / 60_000);
+  if (mins <= 0) return 'just now';
+  return `${mins} min ago`;
+}
+
+export default function ForecastChart({
+  title,
+  unit,
+  metric,
+  liveActual,
+  live = false,
+  stale = false,
+  lastUpdated = null,
+}: ForecastChartProps) {
+  const hasLive = (liveActual?.length ?? 0) > 0;
+  const data = buildData(metric, liveActual);
+  const { domain, ticks } = yScale(metric, liveActual);
+  const xMin = data.length ? data[0].t : 30;
   const bodyRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
 
   // Track the plot width so the tooltip can anchor to the top-right corner.
   useEffect(() => {
@@ -185,30 +245,45 @@ export default function ForecastChart({ title, unit, metric }: ForecastChartProp
     return () => ro.disconnect();
   }, []);
 
+  // Keep the "updated N min ago" badge text current.
+  useEffect(() => {
+    if (!live) return;
+    const id = setInterval(() => setNow(Date.now()), 30 * 1000);
+    return () => clearInterval(id);
+  }, [live]);
+
   const tooltipX = Math.max(8, width - TOOLTIP_WIDTH - 8);
 
   return (
     <div className="chart-card">
       <h3>
-        {title} <span className="chart-unit">{unit}</span>
+        <span className="chart-title">
+          {title} <span className="chart-unit">{unit}</span>
+        </span>
+        {live && (
+          <span className={`live-badge${stale ? ' stale' : ''}`}>
+            <span className="live-dot" />
+            {stale
+              ? `Stale · last update ${agoText(lastUpdated, now)}`
+              : `Live · updated ${agoText(lastUpdated, now)}`}
+          </span>
+        )}
       </h3>
       <div className="chart-body" ref={bodyRef}>
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart
-            data={data}
-            syncId={SYNC_ID}
-            margin={{ top: 8, right: 16, bottom: 8, left: 8 }}
-          >
+          <ComposedChart data={data} syncId={SYNC_ID} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
             <CartesianGrid strokeDasharray="1 4" stroke={GRID_COLOR} vertical={false} />
             <XAxis
-              dataKey="time"
+              dataKey="t"
+              type="number"
+              domain={[xMin, 1440]}
               ticks={HOUR_TICKS}
               interval={0}
-              tickFormatter={(v: string) => v.slice(0, 2)}
+              tickFormatter={(t: number) => PAD2(Math.round(t / 60) % 24)}
               tick={AXIS_TICK}
               tickLine={false}
               axisLine={{ stroke: GRID_COLOR }}
-              minTickGap={16}
+              allowDecimals={false}
             />
             <YAxis
               domain={domain}
@@ -233,7 +308,7 @@ export default function ForecastChart({ title, unit, metric }: ForecastChartProp
               stroke="none"
               fill={BAND_COLOR}
               fillOpacity={0.45}
-              connectNulls={false}
+              connectNulls={hasLive}
               isAnimationActive={false}
               activeDot={false}
             />
@@ -244,7 +319,7 @@ export default function ForecastChart({ title, unit, metric }: ForecastChartProp
               stroke={POE50_COLOR}
               strokeWidth={1.5}
               dot={false}
-              connectNulls={false}
+              connectNulls={hasLive}
               isAnimationActive={false}
             />
             <Line
@@ -257,6 +332,18 @@ export default function ForecastChart({ title, unit, metric }: ForecastChartProp
               connectNulls={false}
               isAnimationActive={false}
             />
+            {hasLive && (
+              <Line
+                type="monotone"
+                dataKey="live"
+                name="Live actual (5-min)"
+                stroke={ACTUAL_COLOR}
+                strokeWidth={1.5}
+                dot={false}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+            )}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
