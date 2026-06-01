@@ -83,7 +83,34 @@ function buildData(metric: Metric, liveActual?: LivePoint[]): ChartPoint[] {
     for (const p of liveActual) row(minutesOf(p.ts)).live = p.value;
   }
 
-  return [...byT.values()].sort((a, b) => a.t - b.t);
+  const rows = [...byT.values()].sort((a, b) => a.t - b.t);
+
+  // Interpolate the forecast plume onto live-only rows (the 5-min demand points
+  // that fall between the 30-min forecast marks), so every tooltip carries a
+  // POE50 and Δ rather than only every 30 minutes. Linear between marks.
+  const anchors = rows.filter((r) => r.poe50 != null);
+  if (anchors.length >= 2) {
+    let j = 0;
+    for (const r of rows) {
+      if (r.poe50 != null) continue;
+      while (j < anchors.length - 1 && anchors[j + 1].t <= r.t) j++;
+      const left = anchors[j];
+      const right = anchors[j + 1];
+      if (!right || r.t < left.t || r.t > right.t || right.t === left.t) continue;
+      const f = (r.t - left.t) / (right.t - left.t);
+      if (left.poe50 != null && right.poe50 != null) {
+        r.poe50 = left.poe50 + (right.poe50 - left.poe50) * f;
+      }
+      if (left.band && right.band) {
+        r.band = [
+          left.band[0] + (right.band[0] - left.band[0]) * f,
+          left.band[1] + (right.band[1] - left.band[1]) * f,
+        ];
+      }
+    }
+  }
+
+  return rows;
 }
 
 const BAND_COLOR = '#c4b59a';
@@ -353,21 +380,26 @@ export default function ForecastChart({
               connectNulls={hasLive}
               isAnimationActive={false}
             />
-            <Line
-              type="monotone"
-              dataKey="actual"
-              name="Actual"
-              stroke={ACTUAL_COLOR}
-              strokeWidth={1.5}
-              dot={false}
-              connectNulls={false}
-              isAnimationActive={false}
-            />
-            {hasLive && (
+            {/* Settled half-hourly actuals (historical days). On a live day the
+                actuals come from the live overlay instead, so this is hidden to
+                avoid a redundant second "actual" legend entry. */}
+            {!live && (
+              <Line
+                type="monotone"
+                dataKey="actual"
+                name="Actual"
+                stroke={ACTUAL_COLOR}
+                strokeWidth={1.5}
+                dot={false}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+            )}
+            {live && (
               <Line
                 type={liveStep ? 'stepAfter' : 'monotone'}
                 dataKey="live"
-                name={liveStep ? 'Live actual (30-min)' : 'Live actual (5-min)'}
+                name="Actuals (Live)"
                 stroke={ACTUAL_COLOR}
                 strokeWidth={1.5}
                 dot={liveStep ? { r: 1.5, fill: ACTUAL_COLOR } : false}
