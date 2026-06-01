@@ -1,0 +1,61 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  # Redeploy after the daily ingest commits new data to main. (The ingest's
+  # commit is pushed with GITHUB_TOKEN, which can't trigger the push event
+  # above, so we chain off the workflow completing instead.)
+  workflow_run:
+    workflows: ["ingest"]
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # For workflow_run (after ingest) only deploy if the ingest succeeded.
+    # push/workflow_dispatch carry no workflow_run payload, so they always run.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Deploy the tip of main, which includes the data the ingest run just
+          # committed — workflow_run's default ref predates that commit.
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build static export
+        env:
+          # Project Pages serve under /<repo>, so prefix assets and data fetches.
+          NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
+        run: npm run build
+      - name: Disable Jekyll so _next/ assets are served
+        run: touch out/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

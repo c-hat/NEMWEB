@@ -385,6 +385,16 @@ def main(argv: list[str]) -> int:
         log.error("all days failed")
         return 1
 
+    # Refresh the demand forecast-error rankings from all day files on disk, so
+    # newly added days enter the top-N list when they qualify.
+    try:
+        from rankings import write_rankings
+
+        rankings_path = write_rankings(args.out)
+        log.info("wrote %s", rankings_path)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("failed to update rankings: %s", exc)
+
     # today.json: the in-progress trading day's forecast plume (live actuals are
     # layered in client-side). Its failure never sinks a successful day ingest;
     # only a today-only run fails the process.

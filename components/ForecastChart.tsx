@@ -1,0 +1,265 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Legend,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import type { Metric } from '@/lib/data';
+
+interface ForecastChartProps {
+  title: string;
+  /** Y-axis unit label, e.g. "MW". */
+  unit: string;
+  metric: Metric;
+}
+
+interface ChartPoint {
+  time: string;
+  /** Range [poe90 (low), poe10 (high)] for the shaded band; null if incomplete. */
+  band: [number, number] | null;
+  poe50: number | null;
+  actual: number | null;
+}
+
+/** "2026-05-28T00:30+10:00" -> "00:30". Falls back to the raw string. */
+function timeLabel(iso: string): string {
+  const match = iso.match(/T(\d{2}:\d{2})/);
+  return match ? match[1] : iso;
+}
+
+function buildData(metric: Metric): ChartPoint[] {
+  return metric.intervals.map((iso, i) => {
+    const low = metric.poe90[i];
+    const high = metric.poe10[i];
+    return {
+      time: timeLabel(iso),
+      band: low != null && high != null ? [low, high] : null,
+      poe50: metric.poe50[i],
+      actual: metric.actual[i],
+    };
+  });
+}
+
+const BAND_COLOR = '#c4b59a';
+const POE50_COLOR = '#3a3833';
+const ACTUAL_COLOR = '#c0552d';
+const GRID_COLOR = '#e3ddd0';
+
+/** Small monospace axis ticks, matching the OE-style numeric readouts. */
+const AXIS_TICK = {
+  fontSize: 11,
+  fill: '#6f6a60',
+  fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+};
+
+/** Delta colour when the actual falls outside the POE10–POE90 band. */
+const DELTA_ACCENT = '#c0552d';
+const DELTA_NEUTRAL = '#6f6a60';
+
+/** Shared id so hovering one chart syncs the crosshair/tooltip on the other. */
+const SYNC_ID = 'nemweb-forecast';
+
+/** Interval-ending labels shown on the x-axis: every 3 hours, no :30 suffix. */
+const HOUR_TICKS = ['03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00', '00:00'];
+
+const TOOLTIP_WIDTH = 176;
+
+/** Round a range to a "nice" 1/2/5 × 10ⁿ value (Heckbert's algorithm). */
+function niceNum(range: number, round: boolean): number {
+  const exp = Math.floor(Math.log10(range || 1));
+  const frac = (range || 1) / 10 ** exp;
+  let nice: number;
+  if (round) {
+    if (frac < 1.5) nice = 1;
+    else if (frac < 3) nice = 2;
+    else if (frac < 7) nice = 5;
+    else nice = 10;
+  } else if (frac <= 1) nice = 1;
+  else if (frac <= 2) nice = 2;
+  else if (frac <= 5) nice = 5;
+  else nice = 10;
+  return nice * 10 ** exp;
+}
+
+/**
+ * Dynamic y-scale snapped to round numbers: [min - pad, max + pad] (pad = 5%
+ * of range) is widened to nice round bounds with evenly spaced round ticks.
+ * Series at or above zero never produce negative ticks (e.g. rooftop overnight).
+ */
+function yScale(metric: Metric): { domain: [number, number]; ticks: number[] } {
+  const vals: number[] = [];
+  for (const arr of [metric.poe10, metric.poe50, metric.poe90, metric.actual]) {
+    for (const v of arr) if (v != null) vals.push(v);
+  }
+  if (vals.length === 0) return { domain: [0, 1], ticks: [0, 1] };
+
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const pad = (max - min) * 0.05 || 1;
+  let lo = min - pad;
+  const hi = max + pad;
+  if (min >= 0) lo = Math.max(0, lo);
+
+  const step = niceNum(niceNum(hi - lo, false) / 5, true);
+  const niceLo = Math.floor(lo / step) * step;
+  const niceHi = Math.ceil(hi / step) * step;
+  const ticks: number[] = [];
+  for (let v = niceLo; v <= niceHi + step * 0.5; v += step) ticks.push(Math.round(v));
+  return { domain: [niceLo, niceHi], ticks };
+}
+
+function fmt(v: number): string {
+  return Math.round(v).toLocaleString('en-AU');
+}
+
+interface TooltipPayloadItem {
+  payload: ChartPoint;
+}
+
+interface ChartTooltipProps {
+  active?: boolean;
+  payload?: TooltipPayloadItem[];
+  unit: string;
+}
+
+/** Three/four-row tooltip: time, POE50, Actual, and Δ vs forecast. */
+function ChartTooltip({ active, payload, unit }: ChartTooltipProps) {
+  if (!active || !payload || payload.length === 0) return null;
+  const point = payload[0].payload;
+  const { poe50, actual, band, time } = point;
+
+  let delta: React.ReactNode = null;
+  if (poe50 != null && actual != null) {
+    const diff = actual - poe50;
+    const pct = poe50 !== 0 ? (diff / poe50) * 100 : 0;
+    const outside = band ? actual > band[1] || actual < band[0] : false;
+    const sign = diff >= 0 ? '+' : '';
+    delta = (
+      <div className="tt-row" style={{ color: outside ? DELTA_ACCENT : DELTA_NEUTRAL }}>
+        <span>Δ vs forecast</span>
+        <span>
+          {sign}
+          {fmt(diff)} {unit} ({sign}
+          {pct.toFixed(1)}%)
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="chart-tooltip">
+      <div className="tt-time">{time}</div>
+      <div className="tt-row">
+        <span>POE50</span>
+        <span>{poe50 == null ? '—' : `${fmt(poe50)} ${unit}`}</span>
+      </div>
+      <div className="tt-row">
+        <span>Actual</span>
+        <span>{actual == null ? '—' : `${fmt(actual)} ${unit}`}</span>
+      </div>
+      {delta}
+    </div>
+  );
+}
+
+export default function ForecastChart({ title, unit, metric }: ForecastChartProps) {
+  const data = buildData(metric);
+  const { domain, ticks } = yScale(metric);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+
+  // Track the plot width so the tooltip can anchor to the top-right corner.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => setWidth(entries[0].contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const tooltipX = Math.max(8, width - TOOLTIP_WIDTH - 8);
+
+  return (
+    <div className="chart-card">
+      <h3>
+        {title} <span className="chart-unit">{unit}</span>
+      </h3>
+      <div className="chart-body" ref={bodyRef}>
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart
+            data={data}
+            syncId={SYNC_ID}
+            margin={{ top: 8, right: 16, bottom: 8, left: 8 }}
+          >
+            <CartesianGrid strokeDasharray="1 4" stroke={GRID_COLOR} vertical={false} />
+            <XAxis
+              dataKey="time"
+              ticks={HOUR_TICKS}
+              interval={0}
+              tickFormatter={(v: string) => v.slice(0, 2)}
+              tick={AXIS_TICK}
+              tickLine={false}
+              axisLine={{ stroke: GRID_COLOR }}
+              minTickGap={16}
+            />
+            <YAxis
+              domain={domain}
+              ticks={ticks}
+              tickFormatter={(v: number) => v.toLocaleString('en-AU')}
+              tick={AXIS_TICK}
+              tickLine={false}
+              axisLine={false}
+              width={52}
+              allowDecimals={false}
+            />
+            <Tooltip
+              content={<ChartTooltip unit={unit} />}
+              position={{ x: tooltipX, y: 8 }}
+              isAnimationActive={false}
+            />
+            <Legend wrapperStyle={{ fontSize: 12, paddingTop: 4 }} iconType="plainline" />
+            <Area
+              type="monotone"
+              dataKey="band"
+              name="POE10–POE90 band"
+              stroke="none"
+              fill={BAND_COLOR}
+              fillOpacity={0.45}
+              connectNulls={false}
+              isAnimationActive={false}
+              activeDot={false}
+            />
+            <Line
+              type="monotone"
+              dataKey="poe50"
+              name="POE50 (forecast)"
+              stroke={POE50_COLOR}
+              strokeWidth={1.5}
+              dot={false}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+            <Line
+              type="monotone"
+              dataKey="actual"
+              name="Actual"
+              stroke={ACTUAL_COLOR}
+              strokeWidth={1.5}
+              dot={false}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
