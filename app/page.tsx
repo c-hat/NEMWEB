@@ -293,7 +293,6 @@ export default function Home() {
             live={isLive}
             stale={liveRooftop.stale}
             lastUpdated={liveRooftop.lastUpdated}
-            liveStep
           />
           {region === 'NEM' && (
             <p className="caveat">
