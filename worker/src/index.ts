@@ -210,19 +210,34 @@ export default {
       return jsonResponse({ error: "region, from and to are required" }, 400, headers);
     }
 
-    // Diagnostic: summarise the upstream fueltech series (name, columns, count,
-    // last sample) so the picked series can be verified. No API key is exposed.
+    // Diagnostic: summarise the upstream fueltech series (uncached — fetched
+    // direct from OE each call). `lastReal` = the latest reading before any
+    // forward-filled tail, so it reveals OE's true rooftop freshness.
     if (url.searchParams.get("debug") && region !== "NEM") {
       const res = await fetch(spec.url(region, from, to), {
         headers: { authorization: `Bearer ${env.OE_API_KEY}` },
       });
       const body: any = await res.json().catch(() => null);
       const results: any[] = body?.data?.[0]?.results ?? [];
+      const lastReal = (data: Row[] | undefined) => {
+        let anchor: Row | null = null;
+        let prev: number | null | undefined;
+        for (const row of data ?? []) {
+          const v = row?.[1];
+          if (v == null) continue;
+          if (v !== prev) {
+            anchor = row;
+            prev = v;
+          }
+        }
+        return anchor;
+      };
       const summary = results.map((r) => ({
         name: r?.name,
         columns: r?.columns,
         count: r?.data?.length ?? 0,
         last: r?.data?.[r?.data?.length - 1],
+        lastReal: lastReal(r?.data),
       }));
       return jsonResponse({ status: res.status, results: summary }, 200, headers);
     }
