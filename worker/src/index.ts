@@ -79,6 +79,47 @@ function rowsToPoints(rows: Row[]): Point[] {
   return rows.map(([ts, value]) => ({ ts, value: value ?? null }));
 }
 
+const INTERP_MAX_GAP_MS = 35 * 60_000; // interpolate within a native interval, not across long flats
+
+/**
+ * OE serves rooftop as 30-min (or 15-min) readings held flat across the 5-min
+ * slots. Reproduce OE's own display: linearly interpolate between consecutive
+ * anchor readings (where the value changes) within a native interval, hold
+ * across long flat runs (overnight 0s), and drop the trailing held-repeat — the
+ * unpublished lag tail where OE just forward-fills the latest reading.
+ */
+function smoothHeld(points: Point[]): Point[] {
+  const anchors: { ms: number; v: number }[] = [];
+  for (const p of points) {
+    if (p.value == null) continue;
+    if (anchors.length === 0 || anchors[anchors.length - 1].v !== p.value) {
+      anchors.push({ ms: Date.parse(p.ts), v: p.value });
+    }
+  }
+  if (anchors.length < 2) return points;
+  const lastAnchorMs = anchors[anchors.length - 1].ms;
+  const out: Point[] = [];
+  let a = 0;
+  for (const p of points) {
+    const ms = Date.parse(p.ts);
+    if (ms > lastAnchorMs) break; // drop the held-repeat lag tail
+    if (p.value == null) {
+      out.push(p);
+      continue;
+    }
+    while (a < anchors.length - 1 && anchors[a + 1].ms <= ms) a++;
+    const left = anchors[a];
+    const right = anchors[a + 1];
+    if (!right || ms <= left.ms || right.ms - left.ms > INTERP_MAX_GAP_MS) {
+      out.push({ ts: p.ts, value: left.v });
+    } else {
+      const f = (ms - left.ms) / (right.ms - left.ms);
+      out.push({ ts: p.ts, value: left.v + (right.v - left.v) * f });
+    }
+  }
+  return out;
+}
+
 interface MetricSpec {
   metric: string;
   interval: string;
@@ -122,7 +163,7 @@ const SPECS: Record<string, MetricSpec> = {
       const pick = results.find((r) =>
         /rooftop/i.test(String(r?.columns?.fueltech ?? r?.columns?.fueltech_id ?? r?.name ?? "")),
       );
-      return rowsToPoints(pick?.data ?? []);
+      return smoothHeld(rowsToPoints(pick?.data ?? []));
     },
   },
 };
