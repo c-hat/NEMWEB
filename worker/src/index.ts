@@ -115,10 +115,13 @@ const SPECS: Record<string, MetricSpec> = {
       `&network_region=${region}&${rangeParams(from, to)}`,
     parse: (body) => {
       const results: any[] = body?.data?.[0]?.results ?? [];
-      const pick =
-        results.find((r) =>
-          /rooftop/i.test(String(r?.columns?.fueltech ?? r?.columns?.fueltech_id ?? r?.name ?? "")),
-        ) ?? results[0];
+      // Pick the solar_rooftop series only. No fallback to results[0]: when a
+      // recent window has no rooftop data yet (it trails ~30 min), the first
+      // series is typically battery (net power, goes negative) — returning that
+      // would plot garbage. Better to return nothing for the un-published tail.
+      const pick = results.find((r) =>
+        /rooftop/i.test(String(r?.columns?.fueltech ?? r?.columns?.fueltech_id ?? r?.name ?? "")),
+      );
       return rowsToPoints(pick?.data ?? []);
     },
   },
@@ -166,13 +169,21 @@ export default {
       return jsonResponse({ error: "region, from and to are required" }, 400, headers);
     }
 
-    // Diagnostic: dump the raw upstream body (single region) to confirm shape.
-    // No API key is included (it travels as a header). Truncated.
-    if (url.searchParams.get("debug") === "raw" && region !== "NEM") {
+    // Diagnostic: summarise the upstream fueltech series (name, columns, count,
+    // last sample) so the picked series can be verified. No API key is exposed.
+    if (url.searchParams.get("debug") && region !== "NEM") {
       const res = await fetch(spec.url(region, from, to), {
         headers: { authorization: `Bearer ${env.OE_API_KEY}` },
       });
-      return jsonResponse({ status: res.status, sample: (await res.text()).slice(0, 1200) }, 200, headers);
+      const body: any = await res.json().catch(() => null);
+      const results: any[] = body?.data?.[0]?.results ?? [];
+      const summary = results.map((r) => ({
+        name: r?.name,
+        columns: r?.columns,
+        count: r?.data?.length ?? 0,
+        last: r?.data?.[r?.data?.length - 1],
+      }));
+      return jsonResponse({ status: res.status, results: summary }, 200, headers);
     }
 
     const cache = caches.default;
