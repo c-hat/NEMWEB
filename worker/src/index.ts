@@ -176,6 +176,7 @@ const SPECS: Record<string, MetricSpec> = {
 async function oeFetch(env: Env, spec: MetricSpec, region: string, from: string, to: string): Promise<Point[]> {
   const res = await fetch(spec.url(region, from, to), {
     headers: { authorization: `Bearer ${env.OE_API_KEY}` },
+    cache: "no-store",
   });
   if (res.status === 401 || res.status === 403) throw new Error("oe-auth");
   if (!res.ok) throw new Error("oe-upstream");
@@ -221,6 +222,7 @@ export default {
     if (url.searchParams.get("debug") && region !== "NEM") {
       const res = await fetch(spec.url(region, from, to), {
         headers: { authorization: `Bearer ${env.OE_API_KEY}` },
+        cache: "no-store",
       });
       const body: any = await res.json().catch(() => null);
       const results: any[] = body?.data?.[0]?.results ?? [];
