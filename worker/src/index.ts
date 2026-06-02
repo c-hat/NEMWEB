@@ -141,10 +141,10 @@ const SPECS: Record<string, MetricSpec> = {
       `&primary_grouping=network_region&network_region=${region}&${rangeParams(from, to)}`,
     parse: (body) => rowsToPoints(body?.data?.[0]?.results?.[0]?.data ?? []),
   },
-  // Rooftop PV (MW). We filter to fueltech=solar_rooftop rather than grouping by
-  // all fueltechs: a grouped response is aligned to the laggiest series' common
-  // time grid (~100 min stale), whereas filtering to the single series returns
-  // rooftop's own latest (~25 min, AEMO ASEFS2). Still 30-min underlying, held
+  // Rooftop PV. We query metrics=energy (not power): for rooftop-by-region OE
+  // publishes energy ~75 min fresher than power. Energy is MWh per 5-min
+  // interval, so we convert to average MW (×12) to match the demand/forecast
+  // units. Filtered to fueltech=solar_rooftop. Still 30-min underlying, held
   // across 5-min slots, so smoothHeld() interpolates to match OE's display.
   rooftop: {
     metric: "rooftop",
@@ -152,7 +152,7 @@ const SPECS: Record<string, MetricSpec> = {
     unit: "MW",
     ttl: 240,
     url: (region, from, to) =>
-      `${OE_BASE}/v4/data/network/NEM?metrics=power&interval=5m` +
+      `${OE_BASE}/v4/data/network/NEM?metrics=energy&interval=5m` +
       `&primary_grouping=network_region&network_region=${region}` +
       `&fueltech=solar_rooftop&${rangeParams(from, to)}`,
     parse: (body) => {
@@ -163,7 +163,12 @@ const SPECS: Record<string, MetricSpec> = {
         results.find((r) =>
           /rooftop/i.test(String(r?.columns?.fueltech ?? r?.columns?.fueltech_id ?? r?.name ?? "")),
         ) ?? (results.length === 1 ? results[0] : undefined);
-      return smoothHeld(rowsToPoints(pick?.data ?? []));
+      // MWh per 5-min interval → average MW.
+      const points = rowsToPoints(pick?.data ?? []).map((p) => ({
+        ts: p.ts,
+        value: p.value == null ? null : p.value * 12,
+      }));
+      return smoothHeld(points);
     },
   },
 };
