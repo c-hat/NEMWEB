@@ -83,10 +83,10 @@ const INTERP_MAX_GAP_MS = 35 * 60_000; // interpolate within a native interval, 
 
 /**
  * OE serves rooftop as 30-min (or 15-min) readings held flat across the 5-min
- * slots. Reproduce OE's own display: linearly interpolate between consecutive
- * anchor readings (where the value changes) within a native interval, hold
- * across long flat runs (overnight 0s), and drop the trailing held-repeat — the
- * unpublished lag tail where OE just forward-fills the latest reading.
+ * slots. Linearly interpolate between consecutive anchor readings (where the
+ * value changes) within a native interval; hold across long flat runs (overnight
+ * 0s). The full series returned by OE is kept — we request up to "now" so OE
+ * never returns future forward-fill beyond the query window.
  */
 function smoothHeld(points: Point[]): Point[] {
   const anchors: { ms: number; v: number }[] = [];
@@ -97,12 +97,10 @@ function smoothHeld(points: Point[]): Point[] {
     }
   }
   if (anchors.length < 2) return points;
-  const lastAnchorMs = anchors[anchors.length - 1].ms;
   const out: Point[] = [];
   let a = 0;
   for (const p of points) {
     const ms = Date.parse(p.ts);
-    if (ms > lastAnchorMs) break; // drop the held-repeat lag tail
     if (p.value == null) {
       out.push(p);
       continue;
