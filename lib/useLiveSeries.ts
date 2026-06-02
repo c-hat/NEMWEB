@@ -148,8 +148,8 @@ export function useLiveDemand(region: string, active: boolean, todayDate: string
 
 /**
  * Live rooftop PV: 5-minute series (OE serves native 30-min ASEFS2 gap-filled
- * to 5-min). Polls every 5 min in daylight only; stale after >10 min. Note the
- * data inherently trails real time by AEMO's ~30-min publish lag.
+ * to 5-min, interpolated smooth). Polls every 5 min in daylight only; stale
+ * after >10 min.
  */
 export function useLiveRooftop(region: string, active: boolean, todayDate: string): LiveSeriesState {
   return useLiveSeries(region, active, todayDate, fetchLiveRooftop, 5 * 60_000, 10 * 60_000, isAestDaylight);
