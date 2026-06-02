@@ -54,7 +54,6 @@ function useLiveSeries(
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [stale, setStale] = useState(false);
 
-  const pointsRef = useRef<LivePoint[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastUpdatedRef = useRef<number | null>(null);
 
@@ -63,38 +62,25 @@ function useLiveSeries(
     let cancelled = false;
 
     // Reset for a fresh (re)activation or region switch.
-    pointsRef.current = [];
     lastUpdatedRef.current = null;
     setPoints([]);
     setLastUpdated(null);
     setStale(false);
 
-    function mergeAppend(incoming: LivePoint[]) {
-      if (incoming.length === 0) return;
-      const byTs = new Map<string, LivePoint>();
-      for (const p of pointsRef.current) byTs.set(p.ts, p);
-      for (const p of incoming) byTs.set(p.ts, p);
-      const merged = [...byTs.values()].sort((a, b) => a.ts.localeCompare(b.ts));
-      pointsRef.current = merged;
-      setPoints(merged);
-    }
-
     async function poll(initial: boolean) {
       if (cancelled) return;
       // Skip scheduled polls outside the active window (initial backfill always runs).
       if (!initial && activeGuard && !activeGuard()) return;
-      // Floor `to` to the poll boundary so every visitor in a window sends an
-      // identical request — the edge cache can then be shared (quota safety).
+      // Re-fetch the whole day each poll (not an incremental append): the
+      // response replaces the series, so it self-corrects and never accumulates
+      // stale points. `to` is floored to the poll boundary so every visitor in
+      // a window sends an identical request and shares the edge cache (quota).
       const to = aestISO(new Date(Math.floor(Date.now() / pollMs) * pollMs));
-      const last = pointsRef.current[pointsRef.current.length - 1];
-      const from =
-        initial || !last
-          ? startOfAestDay(todayDate)
-          : aestISO(new Date(Date.parse(last.ts) + pollMs));
+      const from = startOfAestDay(todayDate);
       try {
         const { points: pts, stale: st } = await fetcher(region, from, to);
         if (cancelled) return;
-        mergeAppend(pts);
+        if (pts.length) setPoints(pts);
         if (st) {
           setStale(true);
         } else {
