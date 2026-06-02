@@ -141,10 +141,11 @@ const SPECS: Record<string, MetricSpec> = {
       `&primary_grouping=network_region&network_region=${region}&${rangeParams(from, to)}`,
     parse: (body) => rowsToPoints(body?.data?.[0]?.results?.[0]?.data ?? []),
   },
-  // Rooftop PV. Power grouped by fueltech; pick the solar_rooftop series. OE
-  // serves rooftop natively at 30-min (ASEFS2, 15-min APVI) gap-filled to 5-min
-  // instantaneous values — the same series OE displays — so we return it as-is
-  // at 5m. The data inherently trails real time by AEMO's ~30-min publish lag.
+  // Rooftop PV (MW). We filter to fueltech=solar_rooftop rather than grouping by
+  // all fueltechs: a grouped response is aligned to the laggiest series' common
+  // time grid (~100 min stale), whereas filtering to the single series returns
+  // rooftop's own latest (~25 min, AEMO ASEFS2). Still 30-min underlying, held
+  // across 5-min slots, so smoothHeld() interpolates to match OE's display.
   rooftop: {
     metric: "rooftop",
     interval: "5m",
@@ -152,17 +153,16 @@ const SPECS: Record<string, MetricSpec> = {
     ttl: 240,
     url: (region, from, to) =>
       `${OE_BASE}/v4/data/network/NEM?metrics=power&interval=5m` +
-      `&primary_grouping=network_region&secondary_grouping=fueltech` +
-      `&network_region=${region}&${rangeParams(from, to)}`,
+      `&primary_grouping=network_region&network_region=${region}` +
+      `&fueltech=solar_rooftop&${rangeParams(from, to)}`,
     parse: (body) => {
       const results: any[] = body?.data?.[0]?.results ?? [];
-      // Pick the solar_rooftop series only. No fallback to results[0]: when a
-      // recent window has no rooftop data yet (it trails ~30 min), the first
-      // series is typically battery (net power, goes negative) — returning that
-      // would plot garbage. Better to return nothing for the un-published tail.
-      const pick = results.find((r) =>
-        /rooftop/i.test(String(r?.columns?.fueltech ?? r?.columns?.fueltech_id ?? r?.name ?? "")),
-      );
+      // Filtered to one fueltech, so match the rooftop series by name, falling
+      // back to the sole result — but never to results[0] among many (battery).
+      const pick =
+        results.find((r) =>
+          /rooftop/i.test(String(r?.columns?.fueltech ?? r?.columns?.fueltech_id ?? r?.name ?? "")),
+        ) ?? (results.length === 1 ? results[0] : undefined);
       return smoothHeld(rowsToPoints(pick?.data ?? []));
     },
   },
