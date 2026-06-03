@@ -26,12 +26,45 @@ export interface LiveRegion {
   rooftopPv: LivePoint[];
 }
 
+/** POE band series from a single pre-dispatch forecast snapshot. */
+export interface ForecastBand {
+  /** AEST half-hour interval timestamps ("YYYY-MM-DDTHH:MM+10:00"). */
+  intervals: string[];
+  /** High POE band (exceeded only ~10% of the time). */
+  poe10: (number | null)[];
+  poe50: (number | null)[];
+  /** Low POE band. */
+  poe90: (number | null)[];
+}
+
+/** Demand + rooftop PV bands for one region within a single forecast snapshot. */
+export interface ForecastRegion {
+  demand?: ForecastBand;
+  rooftopPv?: ForecastBand;
+}
+
+/**
+ * One pre-dispatch forecast snapshot, issued every 30 minutes.
+ * Intervals run from approximately issuedAt through 24:00 of the trading day.
+ */
+export interface ForecastEntry {
+  /** AEST ISO timestamp when this snapshot was published ("YYYY-MM-DDTHH:MM+10:00"). */
+  issuedAt: string;
+  /** Per-region forecast bands (NSW1 … TAS1; no NEM — sum client-side). */
+  regions: Record<string, ForecastRegion>;
+}
+
 /** The published live-data file: all regions (incl. the NEM aggregate) in one object. */
 export interface LiveFile {
   /** ISO timestamp of when the scheduled job last wrote the file. */
   updatedAt: string;
-  /** Per-region series keyed by AEMO region code (NSW1 … TAS1) plus NEM. */
+  /** Per-region actuals series keyed by AEMO region code (NSW1 … TAS1) plus NEM. */
   regions: Record<string, LiveRegion>;
+  /**
+   * Rolling trail of the last ~3 hours of pre-dispatch forecast snapshots,
+   * sorted oldest → newest. Present from the first cron run that fetches NEMWEB.
+   */
+  forecasts?: ForecastEntry[];
 }
 
 /**

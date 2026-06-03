@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "fetch_live.py"
@@ -107,6 +108,15 @@ def test_assemble_includes_nem_and_rounds():
     assert nem0 == 7000.0 + 5000.0 + 6000.0 + 1500.0 + 1100.0
     # Empty rooftop input -> empty NEM rooftop series.
     assert out["regions"]["NEM"]["rooftopPv"] == []
+    # forecasts key always present (empty when not supplied).
+    assert out["forecasts"] == []
+
+
+def test_assemble_includes_forecasts():
+    demand = fl.parse_regions(_demand_body())
+    fc = [{"issuedAt": "2026-06-03T10:30+10:00", "regions": {}}]
+    out = fl.assemble("2026-06-03T00:10:00Z", demand, {}, fc)
+    assert out["forecasts"] == fc
 
 
 def test_carry_forward_filters_to_today(tmp_path):
@@ -137,6 +147,131 @@ def test_want_rooftop_gate():
     assert fl._want_rooftop(15, False) is False
     assert fl._want_rooftop(45, False) is False
     assert fl._want_rooftop(15, True) is True  # forced overrides the gate
+
+
+def test_parse_file_ts():
+    assert fl._parse_file_ts("PUBLIC_OPERATIONAL_DEMAND_FORECAST_HH_20260603103000_0000000001.zip") == \
+        datetime(2026, 6, 3, 10, 30, 0, tzinfo=timezone(timedelta(hours=10)))
+    assert fl._parse_file_ts("PUBLIC_ROOFTOP_PV_FORECAST_202606031030_0000000002.zip") == \
+        datetime(2026, 6, 3, 10, 30, 0, tzinfo=timezone(timedelta(hours=10)))
+    assert fl._parse_file_ts("no_timestamp_here.zip") is None
+
+
+def test_parse_aemo_mms_basic():
+    csv_text = (
+        "C,NEMP.WORLD,OPERATIONAL_DEMAND,AEMO,PUBLIC,2026/06/03 10:30:00\n"
+        "I,OPERATIONAL_DEMAND,FORECAST_HH,1,RUN_DATETIME,REGIONID,INTERVAL_DATETIME,"
+        "OPERATIONAL_DEMAND_POE10,OPERATIONAL_DEMAND_POE50,OPERATIONAL_DEMAND_POE90,LASTCHANGED\n"
+        "D,OPERATIONAL_DEMAND,FORECAST_HH,1,2026/06/03 10:30:00,NSW1,2026/06/03 11:00:00,"
+        "7500.0,7000.0,6500.0,2026/06/03 10:30:00\n"
+        "D,OPERATIONAL_DEMAND,FORECAST_HH,1,2026/06/03 10:30:00,VIC1,2026/06/03 11:00:00,"
+        "5500.0,5000.0,4500.0,2026/06/03 10:30:00\n"
+    )
+    tables = fl._parse_aemo_mms(csv_text)
+    assert "OPERATIONAL_DEMAND_FORECAST_HH" in tables
+    headers, rows = tables["OPERATIONAL_DEMAND_FORECAST_HH"]
+    assert "REGIONID" in headers
+    assert len(rows) == 2
+    col = {h: i for i, h in enumerate(headers)}
+    assert rows[0][col["REGIONID"]] == "NSW1"
+    assert rows[0][col["OPERATIONAL_DEMAND_POE50"]] == "7000.0"
+
+
+def _make_demand_csv(today: str = "2026/06/03") -> str:
+    """Build a minimal AEMO demand forecast CSV for two regions and two intervals."""
+    lines = [
+        f"C,NEMP.WORLD,OPERATIONAL_DEMAND,AEMO,PUBLIC,{today} 10:30:00",
+        "I,OPERATIONAL_DEMAND,FORECAST_HH,1,RUN_DATETIME,REGIONID,INTERVAL_DATETIME,"
+        "OPERATIONAL_DEMAND_POE10,OPERATIONAL_DEMAND_POE50,OPERATIONAL_DEMAND_POE90,LASTCHANGED",
+    ]
+    for region, base in [("NSW1", 7000), ("VIC1", 5000)]:
+        for t in ["11:00:00", "11:30:00"]:
+            lines.append(
+                f"D,OPERATIONAL_DEMAND,FORECAST_HH,1,{today} 10:30:00,{region},{today} {t},"
+                f"{base + 500},{base},{base - 500},{today} 10:30:00"
+            )
+    return "\n".join(lines)
+
+
+def _make_rooftop_csv(today: str = "2026/06/03") -> str:
+    lines = [
+        f"C,NEMP.WORLD,ROOFTOP,AEMO,PUBLIC,{today} 10:30:00",
+        "I,ROOFTOP,FORECAST,2,VERSION_DATETIME,REGIONID,INTERVAL_DATETIME,"
+        "POWERMEAN,POWERPOE50,POWERPOELOW,POWERPOEHIGH,LASTCHANGED",
+    ]
+    for region, base in [("NSW1", 800), ("VIC1", 400)]:
+        for t in ["11:00:00", "11:30:00"]:
+            lines.append(
+                f"D,ROOFTOP,FORECAST,2,{today} 10:30:00,{region},{today} {t},"
+                f"{base},{base},{base - 100},{base + 100},{today} 10:30:00"
+            )
+    return "\n".join(lines)
+
+
+def test_demand_series_extracts_today_only():
+    AEST = timezone(timedelta(hours=10))
+    today = datetime(2026, 6, 3, 0, 0, tzinfo=AEST)
+    window_start = today + timedelta(minutes=30)
+    window_end = today + timedelta(days=1)
+
+    tables = fl._parse_aemo_mms(_make_demand_csv())
+    result = fl._demand_series(tables, window_start, window_end)
+
+    assert "NSW1" in result
+    assert "VIC1" in result
+    assert result["NSW1"]["intervals"] == ["2026-06-03T11:00+10:00", "2026-06-03T11:30+10:00"]
+    assert result["NSW1"]["poe50"] == [7000.0, 7000.0]
+    assert result["NSW1"]["poe10"] == [7500.0, 7500.0]
+    assert result["NSW1"]["poe90"] == [6500.0, 6500.0]
+    # Regions not in the fixture are absent.
+    assert "QLD1" not in result
+
+
+def test_rooftop_series_poe_convention():
+    AEST = timezone(timedelta(hours=10))
+    today = datetime(2026, 6, 3, 0, 0, tzinfo=AEST)
+    window_start = today + timedelta(minutes=30)
+    window_end = today + timedelta(days=1)
+
+    tables = fl._parse_aemo_mms(_make_rooftop_csv())
+    result = fl._rooftop_series(tables, window_start, window_end)
+
+    assert "NSW1" in result
+    # poe10 = POWERPOEHIGH, poe90 = POWERPOELOW (same convention as ingest.py).
+    assert result["NSW1"]["poe10"] == [900.0, 900.0]
+    assert result["NSW1"]["poe50"] == [800.0, 800.0]
+    assert result["NSW1"]["poe90"] == [700.0, 700.0]
+
+
+def test_demand_series_rejects_out_of_window():
+    AEST = timezone(timedelta(hours=10))
+    # Window for tomorrow: intervals from today should not appear.
+    tomorrow = datetime(2026, 6, 4, 0, 0, tzinfo=AEST)
+    window_start = tomorrow + timedelta(minutes=30)
+    window_end = tomorrow + timedelta(days=1)
+
+    tables = fl._parse_aemo_mms(_make_demand_csv("2026/06/03"))
+    result = fl._demand_series(tables, window_start, window_end)
+    assert result == {}
+
+
+def test_carry_forward_forecasts_filters_today(tmp_path):
+    prev = {
+        "updatedAt": "2026-06-03T00:00:00Z",
+        "regions": {},
+        "forecasts": [
+            {"issuedAt": "2026-06-02T22:30+10:00", "regions": {}},  # yesterday
+            {"issuedAt": "2026-06-03T00:30+10:00", "regions": {}},  # today
+            {"issuedAt": "2026-06-03T10:30+10:00", "regions": {}},  # today
+        ],
+    }
+    prev_path = tmp_path / "prev-live.json"
+    prev_path.write_text(json.dumps(prev))
+    kept = fl.carry_forward_forecasts(prev_path, "2026-06-03")
+    assert len(kept) == 2
+    assert all(f["issuedAt"].startswith("2026-06-03") for f in kept)
+    # Missing file -> empty list.
+    assert fl.carry_forward_forecasts(tmp_path / "missing.json", "2026-06-03") == []
 
 
 def _run_all() -> int:
