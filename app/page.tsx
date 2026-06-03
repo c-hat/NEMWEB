@@ -5,6 +5,7 @@ import ForecastChart from '@/components/ForecastChart';
 import { downloadCsv, regionDataToCsv } from '@/lib/csv';
 import {
   buildNemRegion,
+  REGIONS,
   fetchDay,
   fetchIndex,
   fetchLatest,
@@ -18,6 +19,43 @@ import {
   type SelectableRegion,
 } from '@/lib/data';
 import { useLiveData } from '@/lib/useLiveData';
+import type { ForecastBand, ForecastEntry, LiveForecastSeries } from '@/lib/live';
+
+/** Extract per-metric forecast series for a region, summing across regions for NEM. */
+function buildLiveForecastSeries(
+  entries: ForecastEntry[],
+  region: SelectableRegion,
+  metric: 'demand' | 'rooftopPv',
+): LiveForecastSeries[] {
+  return entries
+    .map((fc): LiveForecastSeries | null => {
+      let band: ForecastBand | undefined;
+      if (region === 'NEM') {
+        const bands = REGIONS.map((r) => fc.regions[r]?.[metric]).filter(
+          (b): b is ForecastBand => b != null,
+        );
+        if (!bands.length) return null;
+        const ref = bands[0];
+        const len = ref.intervals.length;
+        const sumArr = (arrs: (number | null)[][]): (number | null)[] =>
+          Array.from({ length: len }, (_, i) => {
+            const vals = arrs.map((a) => a[i]);
+            return vals.some((v) => v == null) ? null : vals.reduce<number>((s, v) => s + v!, 0);
+          });
+        band = {
+          intervals: ref.intervals,
+          poe10: sumArr(bands.map((b) => b.poe10)),
+          poe50: sumArr(bands.map((b) => b.poe50)),
+          poe90: sumArr(bands.map((b) => b.poe90)),
+        };
+      } else {
+        band = fc.regions[region]?.[metric];
+      }
+      if (!band) return null;
+      return { issuedAt: fc.issuedAt, ...band };
+    })
+    .filter((s): s is LiveForecastSeries => s !== null);
+}
 
 export default function Home() {
   const [dates, setDates] = useState<string[]>([]);
@@ -164,6 +202,22 @@ export default function Home() {
   const live = useLiveData(isLive);
   const liveRegion = live.file?.regions[region];
 
+  // Pre-dispatch forecast trail, extracted per metric for the current region.
+  const demandForecasts = useMemo(
+    () =>
+      isLive && live.file?.forecasts?.length
+        ? buildLiveForecastSeries(live.file.forecasts, region, 'demand')
+        : undefined,
+    [isLive, live.file, region],
+  );
+  const rooftopForecasts = useMemo(
+    () =>
+      isLive && live.file?.forecasts?.length
+        ? buildLiveForecastSeries(live.file.forecasts, region, 'rooftopPv')
+        : undefined,
+    [isLive, live.file, region],
+  );
+
   // Top demand-error days for the currently selected region.
   const rankingList = rankings?.regions[region] ?? [];
 
@@ -282,6 +336,7 @@ export default function Home() {
             unit="MW"
             metric={regionData.demand}
             liveActual={isLive ? (liveRegion?.demand ?? []) : undefined}
+            forecasts={demandForecasts}
             live={isLive}
             stale={live.stale}
             lastUpdated={live.updatedAt}
@@ -291,6 +346,7 @@ export default function Home() {
             unit="MW"
             metric={regionData.rooftopPv}
             liveActual={isLive ? (liveRegion?.rooftopPv ?? []) : undefined}
+            forecasts={rooftopForecasts}
             live={isLive}
             stale={live.stale}
             lastUpdated={live.updatedAt}

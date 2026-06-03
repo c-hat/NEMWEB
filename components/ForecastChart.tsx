@@ -13,7 +13,7 @@ import {
   YAxis,
 } from 'recharts';
 import type { Metric } from '@/lib/data';
-import type { LivePoint } from '@/lib/live';
+import type { LiveForecastSeries, LivePoint } from '@/lib/live';
 
 interface ForecastChartProps {
   title: string;
@@ -22,6 +22,8 @@ interface ForecastChartProps {
   metric: Metric;
   /** Live 5-minute actuals to overlay (today only). */
   liveActual?: LivePoint[];
+  /** Pre-dispatch forecast trail (today only, most-recent last). */
+  forecasts?: LiveForecastSeries[];
   /** Render the LIVE/STALE badge (today only). */
   live?: boolean;
   stale?: boolean;
@@ -34,12 +36,18 @@ interface ChartPoint {
   t: number;
   /** "HH:MM" label for the tooltip. */
   time: string;
-  /** Range [poe90 (low), poe10 (high)] for the shaded band; null if incomplete. */
+  /** Range [poe90 (low), poe10 (high)] for the static day-ahead shaded band. */
   band: [number, number] | null;
   poe50: number | null;
   actual: number | null;
   /** Live 5-minute actual (today only). */
   live: number | null;
+  /** POE50 for each older (trail) forecast, null before its issuedAt. Index 0 = oldest. */
+  fcTrail: (number | null)[];
+  /** [poe90 (low), poe10 (high)] for the most recent forecast; null before its issuedAt. */
+  fcLatestBand: [number, number] | null;
+  /** POE50 for the most recent forecast; null before its issuedAt. */
+  fcLatestPoe50: number | null;
 }
 
 const PAD2 = (n: number) => String(n).padStart(2, '0');
@@ -49,12 +57,40 @@ function minuteLabel(t: number): string {
   return `${PAD2(Math.floor(t / 60) % 24)}:${PAD2(t % 60)}`;
 }
 
+type FcAnchor = { t: number; p10: number; p50: number; p90: number };
+
+function buildFcAnchors(fc: LiveForecastSeries, dayStartMs: number): FcAnchor[] {
+  return fc.intervals
+    .map((iso, i) => ({
+      t: Math.round((Date.parse(iso) - dayStartMs) / 60_000),
+      p10: fc.poe10[i] ?? 0,
+      p50: fc.poe50[i] ?? 0,
+      p90: fc.poe90[i] ?? 0,
+    }))
+    .filter((_, i) => fc.poe50[i] != null)
+    .sort((a, b) => a.t - b.t);
+}
+
+function interpolateAt(anchors: FcAnchor[], t: number): { p10: number; p50: number; p90: number } | null {
+  if (!anchors.length) return null;
+  let ai = 0;
+  while (ai < anchors.length - 1 && anchors[ai + 1].t <= t) ai++;
+  const left = anchors[ai];
+  const right = ai + 1 < anchors.length ? anchors[ai + 1] : null;
+  if (t === left.t || !right) return { p10: left.p10, p50: left.p50, p90: left.p90 };
+  const f = (t - left.t) / (right.t - left.t);
+  return {
+    p10: left.p10 + (right.p10 - left.p10) * f,
+    p50: left.p50 + (right.p50 - left.p50) * f,
+    p90: left.p90 + (right.p90 - left.p90) * f,
+  };
+}
+
 /**
- * Merge the half-hourly forecast plume and any 5-minute live actuals onto a
- * single numeric (minutes-of-day) axis. Forecast intervals land at 30, 60, …,
- * 1440; live points at their 5-minute marks. Overlapping marks carry both.
+ * Merge the half-hourly forecast plume, 5-minute live actuals, and NEMWEB
+ * pre-dispatch forecasts onto a single numeric (minutes-of-day) axis.
  */
-function buildData(metric: Metric, liveActual?: LivePoint[]): ChartPoint[] {
+function buildData(metric: Metric, liveActual?: LivePoint[], forecasts?: LiveForecastSeries[]): ChartPoint[] {
   const dayStartMs = Date.parse(metric.intervals[0]) - 30 * 60_000;
   const minutesOf = (iso: string) => Math.round((Date.parse(iso) - dayStartMs) / 60_000);
 
@@ -62,7 +98,8 @@ function buildData(metric: Metric, liveActual?: LivePoint[]): ChartPoint[] {
   const row = (t: number): ChartPoint => {
     let r = byT.get(t);
     if (!r) {
-      r = { t, time: minuteLabel(t), band: null, poe50: null, actual: null, live: null };
+      r = { t, time: minuteLabel(t), band: null, poe50: null, actual: null, live: null,
+             fcTrail: [], fcLatestBand: null, fcLatestPoe50: null };
       byT.set(t, r);
     }
     return r;
@@ -83,9 +120,7 @@ function buildData(metric: Metric, liveActual?: LivePoint[]): ChartPoint[] {
 
   const rows = [...byT.values()].sort((a, b) => a.t - b.t);
 
-  // Interpolate the forecast plume onto live-only rows (the 5-min demand points
-  // that fall between the 30-min forecast marks), so every tooltip carries a
-  // POE50 and Δ rather than only every 30 minutes. Linear between marks.
+  // Interpolate the static plume onto live-only rows (5-min points between 30-min marks).
   const anchors = rows.filter((r) => r.poe50 != null);
   if (anchors.length >= 2) {
     let j = 0;
@@ -108,6 +143,34 @@ function buildData(metric: Metric, liveActual?: LivePoint[]): ChartPoint[] {
     }
   }
 
+  // NEMWEB pre-dispatch forecast trail.
+  if (forecasts?.length) {
+    const n = forecasts.length;
+    const fcAnchors = forecasts.map((fc) => buildFcAnchors(fc, dayStartMs));
+    const issuedTs = forecasts.map((fc) => minutesOf(fc.issuedAt));
+
+    for (const r of rows) r.fcTrail = new Array(n - 1).fill(null);
+
+    for (let fi = 0; fi < n; fi++) {
+      const anch = fcAnchors[fi];
+      if (!anch.length) continue;
+      const issuedT = issuedTs[fi];
+      const isLatest = fi === n - 1;
+
+      for (const r of rows) {
+        if (r.t < issuedT) continue;
+        const val = interpolateAt(anch, r.t);
+        if (!val) continue;
+        if (isLatest) {
+          r.fcLatestBand = [val.p90, val.p10];
+          r.fcLatestPoe50 = val.p50;
+        } else {
+          r.fcTrail[fi] = val.p50;
+        }
+      }
+    }
+  }
+
   return rows;
 }
 
@@ -115,27 +178,21 @@ const BAND_COLOR = '#c4b59a';
 const POE50_COLOR = '#3a3833';
 const ACTUAL_COLOR = '#c0552d';
 const GRID_COLOR = '#e3ddd0';
+const TRAIL_COLOR = '#7a7570';
 
-/** Small monospace axis ticks, matching the OE-style numeric readouts. */
+/** Opacity for each trail position (oldest → second-newest, up to 5). */
+const TRAIL_OPACITIES = [0.1, 0.18, 0.28, 0.4, 0.55];
+
 const AXIS_TICK = {
   fontSize: 11,
   fill: '#6f6a60',
   fontFamily: "'JetBrains Mono', ui-monospace, monospace",
 };
 
-/** Delta colour when the actual falls outside the POE10–POE90 band. */
 const DELTA_ACCENT = '#c0552d';
 const DELTA_NEUTRAL = '#6f6a60';
-
-/** Shared id so hovering one chart syncs the crosshair/tooltip on the other. */
 const SYNC_ID = 'nemweb-forecast';
 
-/**
- * Sync tooltips across charts by nearest x-value (minutes), not array index.
- * The demand (5-min) and rooftop (30-min) charts have different point
- * densities, so index-based sync would point at the wrong time; matching on the
- * `t` value keeps the crosshair on the same moment in both charts.
- */
 function syncByNearestValue(ticks: any, data: any): number {
   const target = Number(data?.activeLabel);
   if (!Array.isArray(ticks) || ticks.length === 0 || Number.isNaN(target)) {
@@ -145,20 +202,14 @@ function syncByNearestValue(ticks: any, data: any): number {
   let bestDist = Infinity;
   for (let i = 0; i < ticks.length; i++) {
     const dist = Math.abs(Number(ticks[i]?.value) - target);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = i;
-    }
+    if (dist < bestDist) { bestDist = dist; best = i; }
   }
   return best;
 }
 
-/** X-axis ticks every 3 hours, as minutes-of-day (03:00 … 24:00). */
 const HOUR_TICKS = [180, 360, 540, 720, 900, 1080, 1260, 1440];
+const TOOLTIP_WIDTH = 192;
 
-const TOOLTIP_WIDTH = 176;
-
-/** Round a range to a "nice" 1/2/5 × 10ⁿ value (Heckbert's algorithm). */
 function niceNum(range: number, round: boolean): number {
   const exp = Math.floor(Math.log10(range || 1));
   const frac = (range || 1) / 10 ** exp;
@@ -175,18 +226,25 @@ function niceNum(range: number, round: boolean): number {
   return nice * 10 ** exp;
 }
 
-/**
- * Dynamic y-scale snapped to round numbers: [min - pad, max + pad] (pad = 5%
- * of range) is widened to nice round bounds with evenly spaced round ticks.
- * Series at or above zero never produce negative ticks (e.g. rooftop overnight).
- * Live actuals are included so the scale fits them too.
- */
-function yScale(metric: Metric, liveActual?: LivePoint[]): { domain: [number, number]; ticks: number[] } {
+function yScale(
+  metric: Metric,
+  liveActual?: LivePoint[],
+  forecasts?: LiveForecastSeries[],
+): { domain: [number, number]; ticks: number[] } {
   const vals: number[] = [];
   for (const arr of [metric.poe10, metric.poe50, metric.poe90, metric.actual]) {
     for (const v of arr) if (v != null) vals.push(v);
   }
   if (liveActual) for (const p of liveActual) if (p.value != null) vals.push(p.value);
+  if (forecasts?.length) {
+    const latest = forecasts[forecasts.length - 1];
+    for (const arr of [latest.poe10, latest.poe50, latest.poe90]) {
+      for (const v of arr) if (v != null) vals.push(v);
+    }
+    for (const fc of forecasts.slice(0, -1)) {
+      for (const v of fc.poe50) if (v != null) vals.push(v);
+    }
+  }
   if (vals.length === 0) return { domain: [0, 1], ticks: [0, 1] };
 
   const min = Math.min(...vals);
@@ -208,6 +266,18 @@ function fmt(v: number): string {
   return Math.round(v).toLocaleString('en-AU');
 }
 
+/** "2026-06-03T10:30+10:00" → "10:30am" */
+function formatIssuedTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Australia/Brisbane',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).format(d).replace(' ', '').replace(' ', '');
+}
+
 interface TooltipPayloadItem {
   payload: ChartPoint;
 }
@@ -216,13 +286,13 @@ interface ChartTooltipProps {
   active?: boolean;
   payload?: TooltipPayloadItem[];
   unit: string;
+  latestFcIssuedAt?: string;
 }
 
-/** Tooltip: time, POE50, Actual (live or settled), and Δ vs forecast. */
-function ChartTooltip({ active, payload, unit }: ChartTooltipProps) {
+function ChartTooltip({ active, payload, unit, latestFcIssuedAt }: ChartTooltipProps) {
   if (!active || !payload || payload.length === 0) return null;
   const point = payload[0].payload;
-  const { poe50, actual, live, band, time } = point;
+  const { poe50, actual, live, band, time, fcLatestPoe50 } = point;
   const act = actual ?? live;
   const isLive = actual == null && live != null;
 
@@ -235,11 +305,7 @@ function ChartTooltip({ active, payload, unit }: ChartTooltipProps) {
     delta = (
       <div className="tt-row" style={{ color: outside ? DELTA_ACCENT : DELTA_NEUTRAL }}>
         <span>Δ vs forecast</span>
-        <span>
-          {sign}
-          {fmt(diff)} {unit} ({sign}
-          {pct.toFixed(1)}%)
-        </span>
+        <span>{sign}{fmt(diff)} {unit} ({sign}{pct.toFixed(1)}%)</span>
       </div>
     );
   }
@@ -258,6 +324,12 @@ function ChartTooltip({ active, payload, unit }: ChartTooltipProps) {
         </div>
       )}
       {delta}
+      {fcLatestPoe50 != null && latestFcIssuedAt && (
+        <div className="tt-row" style={{ color: ACTUAL_COLOR, opacity: 0.8 }}>
+          <span>Latest fcst ({formatIssuedTime(latestFcIssuedAt)})</span>
+          <span>{fmt(fcLatestPoe50)} {unit}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -274,19 +346,19 @@ export default function ForecastChart({
   unit,
   metric,
   liveActual,
+  forecasts,
   live = false,
   stale = false,
   lastUpdated = null,
 }: ForecastChartProps) {
   const hasLive = (liveActual?.length ?? 0) > 0;
-  const data = buildData(metric, liveActual);
-  const { domain, ticks } = yScale(metric, liveActual);
+  const data = buildData(metric, liveActual, forecasts);
+  const { domain, ticks } = yScale(metric, liveActual, forecasts);
   const xMin = data.length ? data[0].t : 30;
   const bodyRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [now, setNow] = useState(() => Date.now());
 
-  // Track the plot width so the tooltip can anchor to the top-right corner.
   useEffect(() => {
     const el = bodyRef.current;
     if (!el) return;
@@ -295,7 +367,6 @@ export default function ForecastChart({
     return () => ro.disconnect();
   }, []);
 
-  // Keep the "updated N min ago" badge text current.
   useEffect(() => {
     if (!live) return;
     const id = setInterval(() => setNow(Date.now()), 30 * 1000);
@@ -303,6 +374,9 @@ export default function ForecastChart({
   }, [live]);
 
   const tooltipX = Math.max(8, width - TOOLTIP_WIDTH - 8);
+
+  const trailCount = forecasts ? forecasts.length - 1 : 0;
+  const latestFc = forecasts?.length ? forecasts[forecasts.length - 1] : undefined;
 
   return (
     <div className="chart-card">
@@ -354,11 +428,13 @@ export default function ForecastChart({
               allowDecimals={false}
             />
             <Tooltip
-              content={<ChartTooltip unit={unit} />}
+              content={<ChartTooltip unit={unit} latestFcIssuedAt={latestFc?.issuedAt} />}
               position={{ x: tooltipX, y: 8 }}
               isAnimationActive={false}
             />
             <Legend wrapperStyle={{ fontSize: 12, paddingTop: 4 }} iconType="plainline" />
+
+            {/* 1. Static day-ahead plume (back of z-order) */}
             <Area
               type="monotone"
               dataKey="band"
@@ -380,9 +456,57 @@ export default function ForecastChart({
               connectNulls={hasLive}
               isAnimationActive={false}
             />
-            {/* Settled half-hourly actuals (historical days). On a live day the
-                actuals come from the live overlay instead, so this is hidden to
-                avoid a redundant second "actual" legend entry. */}
+
+            {/* 2. Grey trail lines (older forecasts, increasing opacity newest→oldest) */}
+            {Array.from({ length: trailCount }, (_, i) => {
+              const opacity = TRAIL_OPACITIES[Math.max(0, TRAIL_OPACITIES.length - trailCount + i)];
+              return (
+                <Line
+                  key={`fc-trail-${i}`}
+                  type="monotone"
+                  dataKey={(d: ChartPoint) => d.fcTrail[i] ?? null}
+                  stroke={TRAIL_COLOR}
+                  strokeWidth={1}
+                  strokeOpacity={opacity}
+                  dot={false}
+                  connectNulls={false}
+                  isAnimationActive={false}
+                  activeDot={false}
+                  legendType="none"
+                />
+              );
+            })}
+
+            {/* 3. Most recent forecast: faded band + dashed red POE50 */}
+            {latestFc && (
+              <Area
+                type="monotone"
+                dataKey="fcLatestBand"
+                stroke="none"
+                fill={BAND_COLOR}
+                fillOpacity={0.22}
+                connectNulls={false}
+                isAnimationActive={false}
+                activeDot={false}
+                legendType="none"
+              />
+            )}
+            {latestFc && (
+              <Line
+                type="monotone"
+                dataKey="fcLatestPoe50"
+                name="Latest forecast"
+                stroke={ACTUAL_COLOR}
+                strokeWidth={1.2}
+                strokeDasharray="4 4"
+                dot={false}
+                connectNulls={false}
+                isAnimationActive={false}
+                activeDot={false}
+              />
+            )}
+
+            {/* 4. Live actuals on top */}
             {!live && (
               <Line
                 type="monotone"

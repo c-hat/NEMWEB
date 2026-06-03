@@ -68,6 +68,20 @@ export interface LiveFile {
 }
 
 /**
+ * Pre-extracted forecast series for a single metric + region, ready to pass
+ * directly to ForecastChart. The page builds these from ForecastEntry[], summing
+ * regions for NEM and selecting demand or rooftopPv as needed.
+ */
+export interface LiveForecastSeries {
+  /** AEST issue time ("YYYY-MM-DDTHH:MM+10:00"). */
+  issuedAt: string;
+  intervals: string[];
+  poe10: (number | null)[];
+  poe50: (number | null)[];
+  poe90: (number | null)[];
+}
+
+/**
  * Fetch the live-data file. A cache-busting query param defeats
  * raw.githubusercontent.com's ~5-minute CDN cache, so each poll sees the latest
  * force-pushed file rather than a stale edge copy. Throws on network/HTTP error.
