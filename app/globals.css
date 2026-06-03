@@ -1,0 +1,348 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  /* OpenElectricity-inspired light mode: warm cream, near-black ink, one warm accent. */
+  --bg: #f7f5f0;
+  --card: #fcfbf8;
+  --border: #e3ddd0;
+  --text: #1c1a17;
+  --muted: #6f6a60;
+  --faint: #9b9488;
+  --accent: #c0552d;
+  --ink: #33312c;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.container {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 20px 18px 40px;
+}
+
+.page-header h1 {
+  margin: 0 0 2px;
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.subtitle {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* Section / control labels: small all-caps, low-contrast. */
+.control-group label,
+.chart-card h3 {
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-items: flex-end;
+  padding: 12px 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.date-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.date-input {
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.date-input:focus-within,
+.date-input:focus {
+  outline: none;
+  border-color: var(--ink);
+}
+
+.date-input::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.55;
+}
+
+.date-nav button.chevron {
+  width: 38px;
+  height: 38px;
+  font-size: 1.1rem;
+  line-height: 1;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.date-nav button.chevron:hover:not(:disabled) {
+  border-color: var(--ink);
+}
+
+.date-nav button.chevron:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* "Largest demand errors" menu: pushed to the right of the controls bar. */
+.errors-control {
+  margin-left: auto;
+}
+
+.errors-select {
+  height: 38px;
+  max-width: 280px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.errors-select:focus {
+  outline: none;
+  border-color: var(--ink);
+}
+
+.errors-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* CSV download button: flat, matches the region/control aesthetic. */
+.download-btn {
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--ink);
+  color: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.download-btn:hover:not(:disabled) {
+  background: var(--text);
+}
+
+.download-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Region switcher: one flat horizontal row, sharp corners, dark selected fill. */
+.region-switcher {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.region-switcher button {
+  padding: 8px 13px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.region-switcher button:hover {
+  border-color: var(--ink);
+}
+
+.region-switcher button.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}
+
+.context {
+  margin: 14px 0 4px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.context strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.charts {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.chart-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 12px 12px 6px;
+}
+
+.chart-card h3 {
+  margin: 0 0 6px 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chart-card h3 .chart-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.live-badge {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.live-badge.stale {
+  color: var(--muted);
+}
+
+.live-badge .live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: live-pulse 2s ease-in-out infinite;
+}
+
+.live-badge.stale .live-dot {
+  background: var(--muted);
+  animation: none;
+}
+
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.chart-card h3 .chart-unit {
+  font-family: var(--font-mono);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--faint);
+}
+
+.chart-body {
+  width: 100%;
+  height: 360px;
+}
+
+.chart-tooltip {
+  width: 180px;
+  padding: 7px 9px;
+  background: rgba(252, 251, 248, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  box-shadow: 0 1px 2px rgba(28, 26, 23, 0.06);
+  font-size: 0.76rem;
+  color: var(--text);
+  pointer-events: none;
+}
+
+.chart-tooltip .tt-time {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.chart-tooltip .tt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chart-tooltip .tt-row span:last-child {
+  font-family: var(--font-mono);
+}
+
+.chart-tooltip .tt-row + .tt-row {
+  margin-top: 2px;
+}
+
+.caveat {
+  margin: 2px 2px 0;
+  font-size: 0.76rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.status,
+.error {
+  margin-top: 20px;
+  font-size: 0.9rem;
+}
+
+.error {
+  color: var(--accent);
+}

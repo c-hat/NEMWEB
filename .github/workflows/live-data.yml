@@ -1,0 +1,79 @@
+name: live-data
+
+# Publishes today's live NEM demand + rooftop PV actuals plus current POE50
+# forecasts as a single JSON file on the force-pushed `live-data` branch, which
+# the frontend reads over raw.githubusercontent.com (same trust domain as the
+# rest of the site, avoiding firewall issues).
+#
+# Data sources per run:
+#   - Demand actuals: OpenElectricity API (OE_API_KEY secret) — every run.
+#   - Rooftop actuals + demand/rooftop forecasts: NEMWEB (unauthenticated) —
+#     fetched when minute-of-hour ∈ {0-9, 30-39}; carried forward otherwise.
+#
+# Triggered by workflow_dispatch ONLY. A small Cloudflare Worker cron (worker/)
+# calls this endpoint every ~10 min during the AEST active window.
+on:
+  workflow_dispatch:
+    inputs:
+      force_rooftop:
+        description: "Fetch rooftop regardless of the minute-of-hour gate (for testing)."
+        type: boolean
+        default: false
+
+# A slow run shouldn't overlap the next ping; keep only the newest.
+concurrency:
+  group: live-data
+  cancel-in-progress: true
+
+# Needed to force-push the live-data branch.
+permissions:
+  contents: write
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Seed previous live file (for rooftop carry-forward)
+        run: |
+          set -euo pipefail
+          if git fetch --depth=1 origin live-data 2>/dev/null \
+             && git show FETCH_HEAD:today-live.json > prev-live.json 2>/dev/null; then
+            echo "seeded prev-live.json from live-data"
+          else
+            rm -f prev-live.json
+            echo "no previous today-live.json yet; starting fresh"
+          fi
+
+      - name: Fetch live data (demand from OE, rooftop + forecasts from NEMWEB)
+        env:
+          OE_API_KEY: ${{ secrets.OE_API_KEY }}
+        run: |
+          set -euo pipefail
+          ARGS=(--out today-live.json --verbose)
+          [ -f prev-live.json ] && ARGS+=(--prev prev-live.json)
+          [ "${{ inputs.force_rooftop }}" = "true" ] && ARGS+=(--force-rooftop)
+          uv run scripts/fetch_live.py "${ARGS[@]}"
+
+      - name: Publish to the live-data orphan branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Build a single-file root (orphan) commit with git plumbing and
+          # force-push it, so live-data always holds exactly this one file with
+          # no accumulating history. The working tree (main's checkout) is
+          # untouched.
+          updated_at="$(python3 -c "import json;print(json.load(open('today-live.json'))['updatedAt'])")"
+          blob="$(git hash-object -w today-live.json)"
+          tree="$(printf '100644 blob %s\ttoday-live.json\n' "$blob" | git mktree)"
+          commit="$(git commit-tree "$tree" -m "live: ${updated_at}")"
+          git push -f origin "${commit}:refs/heads/live-data"
+          echo "published today-live.json to live-data (updatedAt=${updated_at})"

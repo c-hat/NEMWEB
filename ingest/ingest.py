@@ -82,8 +82,12 @@ def _series_for_region(
 ) -> list[float | None]:
     """Project rows onto the 48-interval grid for one region.
 
-    Missing intervals become None. Numeric coercion is permissive.
+    Missing intervals become None. Numeric coercion is permissive. A column or
+    region absent from the frame yields an all-None series rather than raising,
+    so a forecast file that omits a metric (or a region) degrades gracefully.
     """
+    if value_col not in rows.columns or region_col not in rows.columns:
+        return [None] * len(intervals)
     sub = rows[rows[region_col] == region]
     by_dt: dict[datetime, float] = {}
     for _, r in sub.iterrows():
@@ -194,18 +198,30 @@ def fetch_rooftop_actual(trading_day: date_cls, source: Source) -> pd.DataFrame:
 
 # --- Composition ---------------------------------------------------------
 
-def build_day_payload(trading_day: date_cls, source: Source) -> dict:
+def _interval_grid(trading_day: date_cls) -> tuple[list[datetime], list[str]]:
     intervals = half_hour_intervals(trading_day)
     interval_iso = [t.strftime("%Y-%m-%dT%H:%M%z").replace("+1000", "+10:00") for t in intervals]
+    return intervals, interval_iso
 
-    demand_fc, demand_fc_entry = fetch_demand_forecast(trading_day, source)
-    demand_actual = fetch_demand_actual(trading_day, source)
-    rooftop_fc, rooftop_fc_entry = fetch_rooftop_forecast(trading_day, source)
-    rooftop_actual = fetch_rooftop_actual(trading_day, source)
 
-    # Issue time recorded as the snapshot whose timestamp drove the demand pick
-    # (demand and rooftop snapshots may differ slightly; we report demand's).
-    issued = demand_fc_entry.timestamp.strftime("%Y-%m-%dT%H:%M%z").replace("+1000", "+10:00")
+def _region_blocks(
+    demand_fc: pd.DataFrame,
+    rooftop_fc: pd.DataFrame,
+    demand_actual: pd.DataFrame | None,
+    rooftop_actual: pd.DataFrame | None,
+    intervals: list[datetime],
+    interval_iso: list[str],
+) -> dict[str, dict]:
+    """Build the per-region demand/rooftop blocks.
+
+    ``demand_actual``/``rooftop_actual`` may be None (the live "today" case),
+    in which case the actual arrays are all-null and only the forecast plume is
+    populated.
+    """
+    empty = [None] * len(intervals)
+
+    def actual_of(df: pd.DataFrame | None, region: str, col: str) -> list[float | None]:
+        return list(empty) if df is None else _series_for_region(df, region, col, intervals)
 
     regions_payload: dict[str, dict] = {}
     for region in REGIONS:
@@ -214,7 +230,7 @@ def build_day_payload(trading_day: date_cls, source: Source) -> dict:
             "poe10": _series_for_region(demand_fc, region, "OPERATIONAL_DEMAND_POE10", intervals),
             "poe50": _series_for_region(demand_fc, region, "OPERATIONAL_DEMAND_POE50", intervals),
             "poe90": _series_for_region(demand_fc, region, "OPERATIONAL_DEMAND_POE90", intervals),
-            "actual": _series_for_region(demand_actual, region, "OPERATIONAL_DEMAND", intervals),
+            "actual": actual_of(demand_actual, region, "OPERATIONAL_DEMAND"),
         }
         rooftop_block = {
             "intervals": interval_iso,
@@ -226,10 +242,51 @@ def build_day_payload(trading_day: date_cls, source: Source) -> dict:
             "poe10": _series_for_region(rooftop_fc, region, "POWERPOEHIGH", intervals),
             "poe50": _series_for_region(rooftop_fc, region, "POWERPOE50", intervals),
             "poe90": _series_for_region(rooftop_fc, region, "POWERPOELOW", intervals),
-            "actual": _series_for_region(rooftop_actual, region, "POWER", intervals),
+            "actual": actual_of(rooftop_actual, region, "POWER"),
         }
         regions_payload[region] = {"demand": demand_block, "rooftopPv": rooftop_block}
+    return regions_payload
 
+
+def build_day_payload(trading_day: date_cls, source: Source) -> dict:
+    intervals, interval_iso = _interval_grid(trading_day)
+
+    demand_fc, demand_fc_entry = fetch_demand_forecast(trading_day, source)
+    demand_actual = fetch_demand_actual(trading_day, source)
+    rooftop_fc, rooftop_fc_entry = fetch_rooftop_forecast(trading_day, source)
+    rooftop_actual = fetch_rooftop_actual(trading_day, source)
+
+    # Issue time recorded as the snapshot whose timestamp drove the demand pick
+    # (demand and rooftop snapshots may differ slightly; we report demand's).
+    issued = demand_fc_entry.timestamp.strftime("%Y-%m-%dT%H:%M%z").replace("+1000", "+10:00")
+
+    regions_payload = _region_blocks(
+        demand_fc, rooftop_fc, demand_actual, rooftop_actual, intervals, interval_iso
+    )
+    return {
+        "tradingDate": trading_day.isoformat(),
+        "forecastIssuedAt": issued,
+        "regions": regions_payload,
+    }
+
+
+def build_today_payload(trading_day: date_cls, source: Source) -> dict:
+    """Forecast-only payload for the in-progress trading day.
+
+    Same shape as ``build_day_payload`` (so the frontend loads ``today.json``
+    identically to any dated file) but with empty ``actual`` arrays: live
+    actuals are layered in client-side from the Cloudflare Worker, not baked
+    into the file. Only the forecast plume (issued ~D-1 16:00) is fetched.
+    """
+    intervals, interval_iso = _interval_grid(trading_day)
+
+    demand_fc, demand_fc_entry = fetch_demand_forecast(trading_day, source)
+    rooftop_fc, _ = fetch_rooftop_forecast(trading_day, source)
+    issued = demand_fc_entry.timestamp.strftime("%Y-%m-%dT%H:%M%z").replace("+1000", "+10:00")
+
+    regions_payload = _region_blocks(
+        demand_fc, rooftop_fc, None, None, intervals, interval_iso
+    )
     return {
         "tradingDate": trading_day.isoformat(),
         "forecastIssuedAt": issued,
@@ -262,13 +319,32 @@ def ingest_day(trading_day: date_cls, out_dir: Path, source: Source) -> Path:
     return write_outputs(payload, out_dir)
 
 
+def write_today(payload: dict, out_dir: Path) -> Path:
+    """Write today.json. Deliberately not added to index.json/latest.json:
+    it is a transient pointer to the in-progress day's forecast plume."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "today.json"
+    path.write_text(json.dumps(payload, separators=(",", ":")))
+    return path
+
+
+def ingest_today(trading_day: date_cls, out_dir: Path, source: Source) -> Path:
+    log.info("writing today.json for in-progress trading day %s", trading_day.isoformat())
+    payload = build_today_payload(trading_day, source)
+    return write_today(payload, out_dir)
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    g = p.add_mutually_exclusive_group(required=True)
+    g = p.add_mutually_exclusive_group(required=False)
     g.add_argument("--date", type=lambda s: datetime.strptime(s, "%Y-%m-%d").date(),
                    help="Trading day D (AEST), YYYY-MM-DD")
     g.add_argument("--backfill", type=int, metavar="N",
                    help="Ingest the last N days, ending yesterday (AEST)")
+    p.add_argument("--today", action="store_true",
+                   help="Also write today.json: the forecast plume for the in-progress "
+                        "trading day (today, AEST), with empty actual arrays. Can be combined "
+                        "with --date/--backfill, or used on its own.")
     p.add_argument("--out", type=Path, default=Path(__file__).resolve().parents[1] / "public" / "data",
                    help="Output directory for JSON (default: ../public/data)")
     p.add_argument("--source", default=None,
@@ -285,8 +361,13 @@ def main(argv: list[str]) -> int:
     today_aest = datetime.now(AEST).date()
     if args.backfill:
         days = [today_aest - timedelta(days=i) for i in range(1, args.backfill + 1)]
-    else:
+    elif args.date:
         days = [args.date]
+    else:
+        days = []
+
+    if not days and not args.today:
+        p.error("one of --date, --backfill, or --today is required")
 
     source = make_source(args.source)
     log.info("source: %s", source)
@@ -300,8 +381,33 @@ def main(argv: list[str]) -> int:
             log.warning("skipped %s: %s", d.isoformat(), exc)
             failures.append((d, str(exc)))
 
-    if failures and len(failures) == len(days):
+    if days and failures and len(failures) == len(days):
         log.error("all days failed")
+        return 1
+
+    # Refresh the demand forecast-error rankings from all day files on disk, so
+    # newly added days enter the top-N list when they qualify.
+    try:
+        from rankings import write_rankings
+
+        rankings_path = write_rankings(args.out)
+        log.info("wrote %s", rankings_path)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("failed to update rankings: %s", exc)
+
+    # today.json: the in-progress trading day's forecast plume (live actuals are
+    # layered in client-side). Its failure never sinks a successful day ingest;
+    # only a today-only run fails the process.
+    today_failed = False
+    if args.today:
+        try:
+            out_path = ingest_today(today_aest, args.out, source)
+            log.info("wrote %s", out_path)
+        except Exception as exc:  # noqa: BLE001
+            today_failed = True
+            log.warning("failed to write today.json for %s: %s", today_aest.isoformat(), exc)
+
+    if today_failed and not days:
         return 1
     if failures:
         log.warning("%d/%d days skipped", len(failures), len(days))
