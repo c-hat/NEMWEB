@@ -52,7 +52,8 @@ function minuteLabel(t: number): string {
 /**
  * Merge the half-hourly forecast plume and any 5-minute live actuals onto a
  * single numeric (minutes-of-day) axis. Forecast intervals land at 30, 60, …,
- * 1440; live points at their 5-minute marks. Overlapping marks carry both.
+ * 1440; live points at their 5-minute marks from 00:30 on. Overlapping marks
+ * carry both.
  */
 function buildData(metric: Metric, liveActual?: LivePoint[]): ChartPoint[] {
   const dayStartMs = Date.parse(metric.intervals[0]) - 30 * 60_000;
@@ -77,8 +78,16 @@ function buildData(metric: Metric, liveActual?: LivePoint[]): ChartPoint[] {
     r.actual = metric.actual[i];
   });
 
+  // Start the live actuals at 00:30 (drop 00:00–00:25) so they line up with the
+  // forecast's first interval and with settled/archive days, which run
+  // 00:30 … 24:00 (interval-ending). This also pulls the x-axis start to 00:30,
+  // since xMin is taken from the earliest row.
   if (liveActual) {
-    for (const p of liveActual) row(minutesOf(p.ts)).live = p.value;
+    for (const p of liveActual) {
+      const t = minutesOf(p.ts);
+      if (t < 30) continue;
+      row(t).live = p.value;
+    }
   }
 
   const rows = [...byT.values()].sort((a, b) => a.t - b.t);
