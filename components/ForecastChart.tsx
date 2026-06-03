@@ -7,13 +7,21 @@ import {
   ComposedChart,
   Legend,
   Line,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts';
 import type { Metric } from '@/lib/data';
-import type { LivePoint } from '@/lib/live';
+import type { ForecastSeries, LivePoint } from '@/lib/live';
+
+/** Forecast POE50 series for one region/metric, with the issued timestamp. */
+interface CurrentForecastProp {
+  issuedAt: string | null;
+  intervals: string[];
+  poe50: (number | null)[];
+}
 
 interface ForecastChartProps {
   title: string;
@@ -27,6 +35,8 @@ interface ForecastChartProps {
   stale?: boolean;
   /** Epoch ms of the last fresh live fetch, for the badge text. */
   lastUpdated?: number | null;
+  /** Current NEMWEB POE50 forecast for the rest of today (today only). */
+  currentForecast?: CurrentForecastProp;
 }
 
 interface ChartPoint {
@@ -40,6 +50,10 @@ interface ChartPoint {
   actual: number | null;
   /** Live 5-minute actual (today only). */
   live: number | null;
+  /** Current NEMWEB forecast POE50 (today only, future intervals only). */
+  forecastLine: number | null;
+  /** ISO issued timestamp carried on forecast points, for the tooltip. */
+  forecastIssuedAt: string | null;
 }
 
 const PAD2 = (n: number) => String(n).padStart(2, '0');
@@ -49,21 +63,43 @@ function minuteLabel(t: number): string {
   return `${PAD2(Math.floor(t / 60) % 24)}:${PAD2(t % 60)}`;
 }
 
+/** Extract "HH:MM" from an AEST ISO string like "2026-06-03T13:00:00+10:00". */
+function issuedHHMM(iso: string | null): string {
+  if (!iso) return '—';
+  const m = iso.match(/T(\d{2}:\d{2})/);
+  return m ? m[1] : '—';
+}
+
 /**
- * Merge the half-hourly forecast plume and any 5-minute live actuals onto a
- * single numeric (minutes-of-day) axis. Forecast intervals land at 30, 60, …,
- * 1440; live points at their 5-minute marks from 00:30 on. Overlapping marks
- * carry both.
+ * Merge the half-hourly forecast plume, any 5-minute live actuals, and the
+ * current NEMWEB forecast line onto a single numeric (minutes-of-day) axis.
+ * Forecast intervals land at 30, 60, …, 1440; live points at their 5-minute
+ * marks from 00:30 on. The forecast line is only added for intervals > nowMs.
  */
-function buildData(metric: Metric, liveActual?: LivePoint[]): ChartPoint[] {
+function buildData(
+  metric: Metric,
+  liveActual?: LivePoint[],
+  currentForecast?: CurrentForecastProp,
+  nowMs?: number,
+): ChartPoint[] {
   const dayStartMs = Date.parse(metric.intervals[0]) - 30 * 60_000;
   const minutesOf = (iso: string) => Math.round((Date.parse(iso) - dayStartMs) / 60_000);
+  const nowMinutes = nowMs != null ? Math.round((nowMs - dayStartMs) / 60_000) : null;
 
   const byT = new Map<number, ChartPoint>();
   const row = (t: number): ChartPoint => {
     let r = byT.get(t);
     if (!r) {
-      r = { t, time: minuteLabel(t), band: null, poe50: null, actual: null, live: null };
+      r = {
+        t,
+        time: minuteLabel(t),
+        band: null,
+        poe50: null,
+        actual: null,
+        live: null,
+        forecastLine: null,
+        forecastIssuedAt: null,
+      };
       byT.set(t, r);
     }
     return r;
@@ -78,10 +114,8 @@ function buildData(metric: Metric, liveActual?: LivePoint[]): ChartPoint[] {
     r.actual = metric.actual[i];
   });
 
-  // Start the live actuals at 00:30 (drop 00:00–00:25) so they line up with the
-  // forecast's first interval and with settled/archive days, which run
-  // 00:30 … 24:00 (interval-ending). This also pulls the x-axis start to 00:30,
-  // since xMin is taken from the earliest row.
+  // Start the live actuals at 00:30 (drop 00:00–00:25) so they line up with
+  // the forecast's first interval and with archive days (00:30 … 24:00).
   if (liveActual) {
     for (const p of liveActual) {
       const t = minutesOf(p.ts);
@@ -90,11 +124,21 @@ function buildData(metric: Metric, liveActual?: LivePoint[]): ChartPoint[] {
     }
   }
 
+  // Current forecast line: only for intervals strictly after now.
+  if (currentForecast && nowMinutes != null) {
+    for (let i = 0; i < currentForecast.intervals.length; i++) {
+      const t = minutesOf(currentForecast.intervals[i]);
+      if (t <= nowMinutes) continue;
+      const r = row(t);
+      r.forecastLine = currentForecast.poe50[i] ?? null;
+      r.forecastIssuedAt = currentForecast.issuedAt;
+    }
+  }
+
   const rows = [...byT.values()].sort((a, b) => a.t - b.t);
 
-  // Interpolate the forecast plume onto live-only rows (the 5-min demand points
-  // that fall between the 30-min forecast marks), so every tooltip carries a
-  // POE50 and Δ rather than only every 30 minutes. Linear between marks.
+  // Interpolate the forecast plume onto live-only rows (5-min demand points
+  // between the 30-min forecast marks), so every tooltip carries a POE50 and Δ.
   const anchors = rows.filter((r) => r.poe50 != null);
   if (anchors.length >= 2) {
     let j = 0;
@@ -142,8 +186,7 @@ const SYNC_ID = 'nemweb-forecast';
 /**
  * Sync tooltips across charts by nearest x-value (minutes), not array index.
  * The demand (5-min) and rooftop (30-min) charts have different point
- * densities, so index-based sync would point at the wrong time; matching on the
- * `t` value keeps the crosshair on the same moment in both charts.
+ * densities, so index-based sync would point at the wrong time.
  */
 function syncByNearestValue(ticks: any, data: any): number {
   const target = Number(data?.activeLabel);
@@ -185,17 +228,20 @@ function niceNum(range: number, round: boolean): number {
 }
 
 /**
- * Dynamic y-scale snapped to round numbers: [min - pad, max + pad] (pad = 5%
- * of range) is widened to nice round bounds with evenly spaced round ticks.
- * Series at or above zero never produce negative ticks (e.g. rooftop overnight).
- * Live actuals are included so the scale fits them too.
+ * Dynamic y-scale snapped to round numbers. Live actuals and forecast values
+ * are included so the scale fits all rendered series.
  */
-function yScale(metric: Metric, liveActual?: LivePoint[]): { domain: [number, number]; ticks: number[] } {
+function yScale(
+  metric: Metric,
+  liveActual?: LivePoint[],
+  currentForecast?: CurrentForecastProp,
+): { domain: [number, number]; ticks: number[] } {
   const vals: number[] = [];
   for (const arr of [metric.poe10, metric.poe50, metric.poe90, metric.actual]) {
     for (const v of arr) if (v != null) vals.push(v);
   }
   if (liveActual) for (const p of liveActual) if (p.value != null) vals.push(p.value);
+  if (currentForecast) for (const v of currentForecast.poe50) if (v != null) vals.push(v);
   if (vals.length === 0) return { domain: [0, 1], ticks: [0, 1] };
 
   const min = Math.min(...vals);
@@ -227,11 +273,11 @@ interface ChartTooltipProps {
   unit: string;
 }
 
-/** Tooltip: time, POE50, Actual (live or settled), and Δ vs forecast. */
+/** Tooltip: time, POE50, Actual (live or settled), Δ vs forecast, and current forecast. */
 function ChartTooltip({ active, payload, unit }: ChartTooltipProps) {
   if (!active || !payload || payload.length === 0) return null;
   const point = payload[0].payload;
-  const { poe50, actual, live, band, time } = point;
+  const { poe50, actual, live, band, time, forecastLine, forecastIssuedAt } = point;
   const act = actual ?? live;
   const isLive = actual == null && live != null;
 
@@ -267,6 +313,15 @@ function ChartTooltip({ active, payload, unit }: ChartTooltipProps) {
         </div>
       )}
       {delta}
+      {forecastLine != null && (
+        <div className="tt-row" style={{ color: ACTUAL_COLOR }}>
+          <span>Latest forecast</span>
+          <span>
+            {fmt(forecastLine)} {unit}
+            {forecastIssuedAt && ` (${issuedHHMM(forecastIssuedAt)})`}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -286,11 +341,11 @@ export default function ForecastChart({
   live = false,
   stale = false,
   lastUpdated = null,
+  currentForecast,
 }: ForecastChartProps) {
   const hasLive = (liveActual?.length ?? 0) > 0;
-  const data = buildData(metric, liveActual);
-  const { domain, ticks } = yScale(metric, liveActual);
-  const xMin = data.length ? data[0].t : 30;
+  const hasForecastLine = !!currentForecast && live;
+
   const bodyRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [now, setNow] = useState(() => Date.now());
@@ -304,14 +359,22 @@ export default function ForecastChart({
     return () => ro.disconnect();
   }, []);
 
-  // Keep the "updated N min ago" badge text current.
+  // Keep the badge text and "Now" marker current.
   useEffect(() => {
     if (!live) return;
     const id = setInterval(() => setNow(Date.now()), 30 * 1000);
     return () => clearInterval(id);
   }, [live]);
 
+  const data = buildData(metric, liveActual, hasForecastLine ? currentForecast : undefined, live ? now : undefined);
+  const { domain, ticks } = yScale(metric, liveActual, hasForecastLine ? currentForecast : undefined);
+  const xMin = data.length ? data[0].t : 30;
   const tooltipX = Math.max(8, width - TOOLTIP_WIDTH - 8);
+
+  // "Now" marker position in minutes-of-day (AEST, matching the x-axis).
+  const dayStartMs =
+    metric.intervals.length > 0 ? Date.parse(metric.intervals[0]) - 30 * 60_000 : 0;
+  const nowMinutes = Math.round((now - dayStartMs) / 60_000);
 
   return (
     <div className="chart-card">
@@ -368,6 +431,24 @@ export default function ForecastChart({
               isAnimationActive={false}
             />
             <Legend wrapperStyle={{ fontSize: 12, paddingTop: 4 }} iconType="plainline" />
+
+            {/* "Now" vertical marker — divides actuals from forecast. */}
+            {live && nowMinutes >= xMin && nowMinutes <= 1440 && (
+              <ReferenceLine
+                x={nowMinutes}
+                stroke="#c0b8ad"
+                strokeWidth={1}
+                strokeDasharray="2 3"
+                label={{
+                  value: 'Now',
+                  position: 'top',
+                  fill: '#b0a898',
+                  fontSize: 10,
+                  fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                }}
+              />
+            )}
+
             <Area
               type="monotone"
               dataKey="band"
@@ -389,9 +470,7 @@ export default function ForecastChart({
               connectNulls={hasLive}
               isAnimationActive={false}
             />
-            {/* Settled half-hourly actuals (historical days). On a live day the
-                actuals come from the live overlay instead, so this is hidden to
-                avoid a redundant second "actual" legend entry. */}
+            {/* Settled half-hourly actuals (historical days). */}
             {!live && (
               <Line
                 type="monotone"
@@ -410,7 +489,21 @@ export default function ForecastChart({
                 dataKey="live"
                 name="Actuals (Live)"
                 stroke={ACTUAL_COLOR}
+                strokeWidth={2}
+                dot={false}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+            )}
+            {/* Current NEMWEB forecast — dashed, future intervals only. */}
+            {hasForecastLine && (
+              <Line
+                type="monotone"
+                dataKey="forecastLine"
+                name="Latest forecast (POE50)"
+                stroke={ACTUAL_COLOR}
                 strokeWidth={1.5}
+                strokeDasharray="6 4"
                 dot={false}
                 connectNulls={false}
                 isAnimationActive={false}

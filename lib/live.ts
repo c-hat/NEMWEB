@@ -26,12 +26,30 @@ export interface LiveRegion {
   rooftopPv: LivePoint[];
 }
 
+/** POE50 forecast series for one region (half-hourly intervals). */
+export interface ForecastSeries {
+  intervals: string[];
+  poe50: (number | null)[];
+}
+
+/** The current POE50 forecast for all regions, for one metric. */
+export interface CurrentForecast {
+  /** ISO timestamp of the NEMWEB file that was used (when the forecast was issued). */
+  issuedAt: string | null;
+  regions: Record<string, ForecastSeries>;
+}
+
 /** The published live-data file: all regions (incl. the NEM aggregate) in one object. */
 export interface LiveFile {
   /** ISO timestamp of when the scheduled job last wrote the file. */
   updatedAt: string;
   /** Per-region series keyed by AEMO region code (NSW1 … TAS1) plus NEM. */
   regions: Record<string, LiveRegion>;
+  /** Most-recent NEMWEB forecast POE50 for the rest of today (may be absent on old files). */
+  currentForecast?: {
+    demand: CurrentForecast;
+    rooftopPv: CurrentForecast;
+  };
 }
 
 /**

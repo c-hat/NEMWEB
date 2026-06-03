@@ -1,16 +1,17 @@
 name: live-data
 
-# Publishes today's live NEM demand + rooftop PV as a single JSON file on the
-# force-pushed `live-data` branch, which the frontend reads over
-# raw.githubusercontent.com (same trust domain as the rest of the site, so it
-# isn't blocked by corporate firewalls the way a third-party origin can be).
+# Publishes today's live NEM demand + rooftop PV actuals plus current POE50
+# forecasts as a single JSON file on the force-pushed `live-data` branch, which
+# the frontend reads over raw.githubusercontent.com (same trust domain as the
+# rest of the site, avoiding firewall issues).
 #
-# Triggered by workflow_dispatch ONLY. GitHub's own `schedule` cron fires 1-4h
-# late on this repo (measured against the daily ingest job), so it can't drive a
-# ~10-min cadence; a workflow_dispatch, by contrast, starts within ~20s. A small
-# Cloudflare Worker cron (worker/) calls this workflow's dispatch endpoint every
-# ~10 min during the AEST active window. Each run does ONE fetch + publish.
-# The OE API key is the repo secret OE_API_KEY.
+# Data sources per run:
+#   - Demand actuals: OpenElectricity API (OE_API_KEY secret) — every run.
+#   - Rooftop actuals + demand/rooftop forecasts: NEMWEB (unauthenticated) —
+#     fetched when minute-of-hour ∈ {0-9, 30-39}; carried forward otherwise.
+#
+# Triggered by workflow_dispatch ONLY. A small Cloudflare Worker cron (worker/)
+# calls this endpoint every ~10 min during the AEST active window.
 on:
   workflow_dispatch:
     inputs:
@@ -51,7 +52,7 @@ jobs:
             echo "no previous today-live.json yet; starting fresh"
           fi
 
-      - name: Fetch live data from OpenElectricity
+      - name: Fetch live data (demand from OE, rooftop + forecasts from NEMWEB)
         env:
           OE_API_KEY: ${{ secrets.OE_API_KEY }}
         run: |

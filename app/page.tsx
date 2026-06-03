@@ -164,6 +164,24 @@ export default function Home() {
   const live = useLiveData(isLive);
   const liveRegion = live.file?.regions[region];
 
+  // Current NEMWEB forecast for the selected region — demand and rooftop
+  // have separate issuedAt timestamps so we build them independently.
+  const liveDemandForecast = useMemo(() => {
+    const cf = live.file?.currentForecast?.demand;
+    if (!cf) return undefined;
+    const series = cf.regions[region];
+    if (!series) return undefined;
+    return { issuedAt: cf.issuedAt, ...series };
+  }, [live.file, region]);
+
+  const liveRooftopForecast = useMemo(() => {
+    const cf = live.file?.currentForecast?.rooftopPv;
+    if (!cf) return undefined;
+    const series = cf.regions[region];
+    if (!series) return undefined;
+    return { issuedAt: cf.issuedAt, ...series };
+  }, [live.file, region]);
+
   // Top demand-error days for the currently selected region.
   const rankingList = rankings?.regions[region] ?? [];
 
@@ -285,6 +303,7 @@ export default function Home() {
             live={isLive}
             stale={live.stale}
             lastUpdated={live.updatedAt}
+            currentForecast={isLive ? liveDemandForecast : undefined}
           />
           <ForecastChart
             title={`${REGION_LABELS[region]} — Rooftop PV`}
@@ -294,6 +313,7 @@ export default function Home() {
             live={isLive}
             stale={live.stale}
             lastUpdated={live.updatedAt}
+            currentForecast={isLive ? liveRooftopForecast : undefined}
           />
           {region === 'NEM' && (
             <p className="caveat">
