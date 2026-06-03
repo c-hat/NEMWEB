@@ -6,10 +6,19 @@ name: live-data
 # isn't blocked by corporate firewalls the way a third-party origin can be).
 # Replaces the Cloudflare Worker proxy.
 #
-# Manual-only for now (workflow_dispatch). The cron schedule is added once this
-# path is confirmed working end-to-end. The OE API key is the repo secret
-# OE_API_KEY (Settings -> Secrets and variables -> Actions).
+# Runs on a schedule during AEST daytime/evening, and on manual dispatch. The
+# OE API key is the repo secret OE_API_KEY (Settings -> Secrets and variables
+# -> Actions).
 on:
+  schedule:
+    # AEST = UTC+10 (no DST). These two windows wrap midnight UTC to cover
+    # AEST 06:00-23:50, every 10 minutes. Demand refreshes each run (~10 min);
+    # rooftop refreshes ~every 30 min via the script's minute-of-hour gate.
+    # Outside this window the live view shows STALE (expected - nothing is
+    # publishing). GitHub cron can lag/drift ~5-15 min and is not guaranteed to
+    # fire exactly on the minute. ~144 OE requests/day, well under the 500 cap.
+    - cron: "*/10 20-23 * * *"  # AEST 06:00-09:50
+    - cron: "*/10 0-13 * * *"   # AEST 10:00-23:50
   workflow_dispatch:
     inputs:
       force_rooftop:
