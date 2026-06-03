@@ -4,34 +4,22 @@ name: live-data
 # force-pushed `live-data` branch, which the frontend reads over
 # raw.githubusercontent.com (same trust domain as the rest of the site, so it
 # isn't blocked by corporate firewalls the way a third-party origin can be).
-# Replaces the Cloudflare Worker proxy.
 #
-# Reliable ~10-min cadence WITHOUT depending on GitHub's flaky sub-15-min cron:
-# a coarse HOURLY kick (GitHub runs hourly/daily crons dependably) starts a job
-# that self-loops, fetching every ~10 min until the top of the next UTC hour,
-# when the next kick takes over (concurrency hands off cleanly). The OE API key
-# is the repo secret OE_API_KEY (Settings -> Secrets and variables -> Actions).
+# Triggered by workflow_dispatch ONLY. GitHub's own `schedule` cron fires 1-4h
+# late on this repo (measured against the daily ingest job), so it can't drive a
+# ~10-min cadence; a workflow_dispatch, by contrast, starts within ~20s. A small
+# Cloudflare Worker cron (worker/) calls this workflow's dispatch endpoint every
+# ~10 min during the AEST active window. Each run does ONE fetch + publish.
+# The OE API key is the repo secret OE_API_KEY.
 on:
-  schedule:
-    # AEST = UTC+10 (no DST). Hourly kicks cover AEST 06:00-23:00; each job then
-    # loops internally to the next hour, so the live file refreshes ~every
-    # 10 min across the window. Outside it the live view shows STALE (expected -
-    # nothing is publishing overnight).
-    - cron: "0 20-23 * * *"  # kicks at AEST 06:00, 07:00, 08:00, 09:00
-    - cron: "0 0-13 * * *"   # kicks at AEST 10:00 .. 23:00
   workflow_dispatch:
     inputs:
       force_rooftop:
-        description: "Force rooftop on the first iteration (ignores the minute gate; for testing)."
+        description: "Fetch rooftop regardless of the minute-of-hour gate (for testing)."
         type: boolean
         default: false
-      max_iterations:
-        description: "Stop after N fetches (for testing). 0 = loop until the next UTC hour."
-        type: string
-        default: "0"
 
-# Overlapping runs would fight over the force-pushed branch. cancel-in-progress
-# lets each hourly kick cleanly take over from any still-running previous loop.
+# A slow run shouldn't overlap the next ping; keep only the newest.
 concurrency:
   group: live-data
   cancel-in-progress: true
@@ -63,61 +51,28 @@ jobs:
             echo "no previous today-live.json yet; starting fresh"
           fi
 
-      - name: Fetch + publish every ~10 min until the next hour
+      - name: Fetch live data from OpenElectricity
         env:
           OE_API_KEY: ${{ secrets.OE_API_KEY }}
-          FORCE_ROOFTOP: ${{ inputs.force_rooftop }}
-          MAX_ITERATIONS: ${{ inputs.max_iterations }}
         run: |
-          # Deliberately NOT 'set -e': a single transient OE/publish failure
-          # must not abort the whole hour's loop - we log it and continue.
-          set -uo pipefail
+          set -euo pipefail
+          ARGS=(--out today-live.json --verbose)
+          [ -f prev-live.json ] && ARGS+=(--prev prev-live.json)
+          [ "${{ inputs.force_rooftop }}" = "true" ] && ARGS+=(--force-rooftop)
+          uv run scripts/fetch_live.py "${ARGS[@]}"
+
+      - name: Publish to the live-data orphan branch
+        run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          max_iter="${MAX_ITERATIONS:-0}"; [ -z "$max_iter" ] && max_iter=0
-          # Loop until the top of the next UTC hour, so the next hourly kick
-          # takes over seamlessly (max_iterations bounds it for manual testing).
-          end=$(( ( $(date -u +%s) / 3600 + 1 ) * 3600 ))
-
           # Build a single-file root (orphan) commit with git plumbing and
           # force-push it, so live-data always holds exactly this one file with
           # no accumulating history. The working tree (main's checkout) is
           # untouched.
-          publish() {
-            local updated blob tree commit
-            updated="$(python3 -c "import json;print(json.load(open('today-live.json'))['updatedAt'])")" || return 1
-            blob="$(git hash-object -w today-live.json)" || return 1
-            tree="$(printf '100644 blob %s\ttoday-live.json\n' "$blob" | git mktree)" || return 1
-            commit="$(git commit-tree "$tree" -m "live: ${updated}")" || return 1
-            git push -f origin "${commit}:refs/heads/live-data" || return 1
-            echo "published today-live.json (updatedAt=${updated})"
-          }
-
-          i=0
-          while :; do
-            ARGS=(--out today-live.json --verbose)
-            [ -f prev-live.json ] && ARGS+=(--prev prev-live.json)
-            # force_rooftop only on the first iteration, so a forced run doesn't
-            # triple the rooftop request budget for the whole hour.
-            if [ "${FORCE_ROOFTOP}" = "true" ] && [ "$i" -eq 0 ]; then ARGS+=(--force-rooftop); fi
-
-            if uv run scripts/fetch_live.py "${ARGS[@]}"; then
-              if publish; then
-                cp today-live.json prev-live.json   # carry forward to next iteration
-              fi
-            else
-              echo "iteration $i: fetch failed, continuing"
-            fi
-
-            i=$((i+1))
-            if [ "$max_iter" != "0" ] && [ "$i" -ge "$max_iter" ]; then
-              echo "max_iterations ($max_iter) reached; exiting"
-              break
-            fi
-            if [ "$(date -u +%s)" -ge "$end" ]; then
-              echo "reached the next-hour boundary; exiting (next kick takes over)"
-              break
-            fi
-            sleep 600
-          done
+          updated_at="$(python3 -c "import json;print(json.load(open('today-live.json'))['updatedAt'])")"
+          blob="$(git hash-object -w today-live.json)"
+          tree="$(printf '100644 blob %s\ttoday-live.json\n' "$blob" | git mktree)"
+          commit="$(git commit-tree "$tree" -m "live: ${updated_at}")"
+          git push -f origin "${commit}:refs/heads/live-data"
+          echo "published today-live.json to live-data (updatedAt=${updated_at})"

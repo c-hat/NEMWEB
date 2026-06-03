@@ -1,8 +1,8 @@
 {
-  "name": "nemweb-proxy",
+  "name": "nemweb-live-pinger",
   "version": "0.1.0",
   "private": true,
-  "description": "Edge caching proxy for OpenElectricity live data, for the NEMWEB tracker.",
+  "description": "Cloudflare Worker cron that triggers the NEMWEB live-data GitHub workflow every ~10 min.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",

@@ -1,133 +1,86 @@
-# nemweb-proxy (Cloudflare Worker)
+# nemweb-live-pinger (Cloudflare Worker)
 
-A thin edge-cached proxy between the NEMWEB tracker frontend and the
-[OpenElectricity](https://platform.openelectricity.org.au) (OE) API.
+A cron-only Cloudflare Worker that keeps the NEMWEB **`live-data`** GitHub
+Action firing on a reliable ~10-minute cadence.
 
 **Why it exists**
 
-- **Hides the OE API key.** The key lives in a Wrangler secret; the static
-  frontend never sees it.
-- **Shares data across visitors.** Responses are cached at Cloudflare's edge,
-  so a busy day stays well under OE's free-tier **500 requests/day per key**
-  regardless of how many tabs are open. Workers' own free tier is 100k
-  req/day — not a concern.
+GitHub's own `schedule` cron runs **1–4 hours late** on this free/public repo
+(measured against the daily `ingest` job), so it can't drive a 10-minute
+refresh. A `workflow_dispatch`, by contrast, starts within **~20 s**. So every
+~10 min this Worker POSTs the workflow's dispatch endpoint. It runs server-side
+(Worker → GitHub API), so — unlike the old data-proxy this replaced — it is
+never hit by the browser and a corporate firewall is irrelevant.
 
-## Endpoints
+The live data itself is produced by the workflow (`scripts/fetch_live.py`) and
+force-pushed to the `live-data` branch, which the frontend reads over
+`raw.githubusercontent.com`. This Worker only pulls the trigger.
 
-```
-GET /demand?region={NSW1|VIC1|QLD1|SA1|TAS1|NEM}&from={ISO}&to={ISO}   # 5-min demand
-GET /rooftop?region=...&from=...&to=...                                  # 30-min rooftop PV
-```
+## How it works
 
-Returns 5-minute operational demand for the range (rooftop is identical with
-`"metric":"rooftop"`, `"interval":"30m"`). Rooftop note: OE's data endpoint has
-no 30m interval, so the Worker requests `power` at 5m grouped by fueltech, picks
-the `solar_rooftop` series, and downsamples to the `:00`/`:30` marks (the native
-ASEFS2 readings — the 5m series is gap-filled between them).
+- Cron trigger `*/10 * * * *` (UTC) — see `[triggers]` in `wrangler.toml`.
+- The handler gates to the **AEST active window (06:00–23:59)**; outside it the
+  invocation no-ops (free), so the live view goes STALE overnight by design.
+- On each active tick it `POST`s
+  `https://api.github.com/repos/c-hat/NEMWEB/actions/workflows/live-data.yml/dispatches`
+  with body `{"ref":"main"}`, authenticated by the `GH_DISPATCH_TOKEN` secret.
+- A success is HTTP `204`. `401` means the token is invalid; `404` usually means
+  it lacks the `Actions: write` permission. Failures are logged (`wrangler tail`).
+- The `fetch` handler is a health check only — it serves no data and triggers
+  nothing, so the public `workers.dev` URL can't be used to burn the OE budget.
 
-```json
-{
-  "region": "NSW1",
-  "metric": "demand",
-  "interval": "5m",
-  "unit": "MW",
-  "points": [{ "ts": "2026-06-01T00:00:00+10:00", "value": 7123.4 }, ...]
-}
-```
+Budget: ~6 dispatches/hour × ~18 active hours ≈ 108 demand + ~36 rooftop OE
+requests/day, well under OE's 500/day free-tier cap.
 
-- `region=NEM` fans out to the five regions and sums server-side, so the
-  aggregate is a single shared cache entry.
-- Cache TTL is 240s for `/demand` and 1500s for `/rooftop` (each just under its
-  poll cycle), so an interval triggers at most one OE call no matter how many
-  visitors.
-- On an OE 5xx/timeout, the last cached response is served with an
-  `X-Stale: true` header. On 401/403 (key problem) it returns `502` and logs —
-  the OE key and upstream URL are never echoed in responses.
-- `&debug=raw` (single region) returns the truncated raw upstream body for
-  shape-checking, if OE's schema ever shifts. Both endpoints are verified
-  against live OE.
+## Setup
 
-## Deploy
+Prerequisites: a Cloudflare account and a **fine-grained GitHub PAT** scoped to
+`c-hat/NEMWEB` with **Actions: Read and write** (Metadata is included
+automatically).
 
-Prerequisites: a Cloudflare account, an OE API key
-(register at <https://platform.openelectricity.org.au>), and Node.
+1. **Deploy the Worker.** Either let the `deploy-worker` GitHub Action do it
+   (it runs on push to `worker/**`, using the `CLOUDFLARE_API_TOKEN` repo
+   secret), or deploy locally:
 
-```bash
-cd worker
-npm install
-npx wrangler login                 # one-time, opens browser
-npx wrangler secret put OE_API_KEY # paste the OE key when prompted
-npm run deploy
-```
+   ```bash
+   export CLOUDFLARE_API_TOKEN=your_token_here   # do not commit
+   cd worker
+   npm install
+   npx wrangler whoami        # verifies the token
+   npm run deploy
+   ```
 
-### Headless / remote machine (no browser)
+2. **Add the GitHub PAT as a Worker secret** (once; persists across deploys):
 
-`wrangler login` opens a browser via `xdg-open` and needs a localhost
-callback, so it fails on a headless box (`Missing file or directory:
-xdg-open`). Authenticate with an API token instead — no browser required:
+   ```bash
+   npx wrangler secret put GH_DISPATCH_TOKEN     # paste the PAT when prompted
+   ```
 
-1. Cloudflare dashboard → **My Profile → API Tokens → Create Token →
-   "Edit Cloudflare Workers"** (or a custom token with *Account → Workers
-   Scripts → Edit*).
-2. Export it and deploy:
+   Or in the Cloudflare dashboard: **Workers & Pages → nemweb-live-pinger →
+   Settings → Variables and Secrets → Add → type Secret →
+   `GH_DISPATCH_TOKEN`**.
+
+3. **(Cleanup)** The old `nemweb-proxy` Worker is no longer used and can be
+   deleted in the dashboard (**Workers & Pages → nemweb-proxy → Settings →
+   Delete**). The frontend now reads `live-data` directly, not the proxy.
+
+## Verify
 
 ```bash
-export CLOUDFLARE_API_TOKEN=your_token_here   # do not commit
-cd worker
-npm install
-npx wrangler whoami                # verifies the token
-npx wrangler secret put OE_API_KEY # paste the OE key
-npm run deploy
+npx wrangler tail            # watch live logs; expect a "dispatched … -> 204"
+                            # line at the next 10-min boundary (during 06:00–23:59 AEST)
 ```
 
-
-`deploy` prints the Worker URL, e.g.
-`https://nemweb-proxy.<your-account>.workers.dev`.
-
-### Verify
-
-Both endpoints are verified against live OE. To re-check after a deploy (encode
-the `+` in the offset as `%2B`):
-
-```bash
-# demand (known good)
-curl "https://nemweb-proxy.<account>.workers.dev/demand?region=NSW1\
-&from=2026-06-01T00:00:00%2B10:00&to=2026-06-01T00:30:00%2B10:00"
-
-# rooftop — expect a non-empty points array during daylight
-curl "https://nemweb-proxy.<account>.workers.dev/rooftop?region=NSW1\
-&from=2026-06-01T00:00:00%2B10:00&to=2026-06-01T12:00:00%2B10:00"
-```
-
-If an endpoint returns an empty `points` array (or 502s) after an OE schema
-change, inspect the upstream shape and adjust **only** that metric's
-`url`/`parse` in `SPECS` (`src/index.ts`), then redeploy:
-
-```bash
-curl "https://nemweb-proxy.<account>.workers.dev/rooftop?region=NSW1\
-&from=2026-06-01T00:00:00%2B10:00&to=2026-06-01T12:00:00%2B10:00&debug=raw"
-```
-
-The Worker URL is a build-time constant in the frontend
-(`NEXT_PUBLIC_WORKER_URL`).
-
-## CORS
-
-Allowed origins are the GitHub Pages site and localhost (any port):
-
-```
-https://c-hat.github.io
-http://localhost:*
-```
-
-No wildcard. Update `ALLOWED_ORIGIN` in `src/index.ts` if the deploy origin
-changes.
+A successful dispatch shows up as a new `live-data` workflow run in the GitHub
+Actions tab and a fresh `today-live.json` on the `live-data` branch within ~30 s.
 
 ## Local dev
 
 ```bash
-npm run dev    # wrangler dev; needs OE_API_KEY in .dev.vars (gitignored)
-npm run tail   # live-tail production logs
+npm run dev                 # wrangler dev
+# In another shell, trigger the cron handler on demand:
+curl "http://localhost:8787/cdn-cgi/handler/scheduled"
 ```
 
-Create `worker/.dev.vars` (gitignored) with `OE_API_KEY=...` for local runs.
+For a real dispatch in dev you need `GH_DISPATCH_TOKEN` in `worker/.dev.vars`
+(gitignored): `GH_DISPATCH_TOKEN=your_pat_here`.

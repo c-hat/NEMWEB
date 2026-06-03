@@ -1,8 +1,18 @@
-# Cloudflare Worker config for nemweb-proxy.
-# Deploy with `npm run deploy` from this directory (see README.md).
-name = "nemweb-proxy"
+# Cloudflare Worker config for nemweb-live-pinger.
+#
+# A cron-only Worker: every ~10 min it POSTs the live-data GitHub workflow's
+# dispatch endpoint (see src/index.ts and README.md). Deploy via the
+# deploy-worker GitHub Action (on push to worker/**) or `npm run deploy` here.
+name = "nemweb-live-pinger"
 main = "src/index.ts"
 compatibility_date = "2026-06-01"
 
-# OE_API_KEY is a SECRET and must NOT live here. Set it once per environment:
-#   npx wrangler secret put OE_API_KEY
+# Fire every 10 minutes (UTC). The handler gates to the AEST active window, so
+# overnight invocations no-op. CF cron triggers are reliable, unlike GitHub's.
+[triggers]
+crons = ["*/10 * * * *"]
+
+# GH_DISPATCH_TOKEN is a SECRET (a fine-grained GitHub PAT with Actions: Read
+# and write on c-hat/NEMWEB) and must NOT live here. Set it once on the Worker:
+#   npx wrangler secret put GH_DISPATCH_TOKEN
+# (or add it as an encrypted Variable in the Cloudflare dashboard).
