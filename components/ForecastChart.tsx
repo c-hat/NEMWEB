@@ -37,6 +37,11 @@ interface ForecastChartProps {
   lastUpdated?: number | null;
   /** Current NEMWEB POE50 forecast for the rest of today (today only). */
   currentForecast?: CurrentForecastProp;
+  /**
+   * True for half-hourly (rooftop) actuals — renders small dots on each point
+   * so sparse data is visible even when only a few intervals have reported.
+   */
+  sparseActuals?: boolean;
 }
 
 interface ChartPoint {
@@ -342,6 +347,7 @@ export default function ForecastChart({
   stale = false,
   lastUpdated = null,
   currentForecast,
+  sparseActuals = false,
 }: ForecastChartProps) {
   const hasLive = (liveActual?.length ?? 0) > 0;
   const hasForecastLine = !!currentForecast && live;
@@ -400,7 +406,7 @@ export default function ForecastChart({
             data={data}
             syncId={SYNC_ID}
             syncMethod={syncByNearestValue}
-            margin={{ top: 8, right: 16, bottom: 8, left: 8 }}
+            margin={{ top: 20, right: 16, bottom: 8, left: 8 }}
           >
             <CartesianGrid strokeDasharray="1 4" stroke={GRID_COLOR} vertical={false} />
             <XAxis
@@ -490,7 +496,8 @@ export default function ForecastChart({
                 name="Actuals (Live)"
                 stroke={ACTUAL_COLOR}
                 strokeWidth={2}
-                dot={false}
+                dot={sparseActuals ? { r: 3, fill: ACTUAL_COLOR, strokeWidth: 0 } : false}
+                activeDot={{ r: 4, fill: ACTUAL_COLOR, strokeWidth: 0 }}
                 connectNulls={false}
                 isAnimationActive={false}
               />

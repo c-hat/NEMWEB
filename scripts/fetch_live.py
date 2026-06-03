@@ -290,9 +290,13 @@ def fetch_rooftop_actual_nemweb(session: requests.Session, today_str: str) -> di
         log.warning("ROOFTOP_PV/ACTUAL: no matching table in %s; got: %s", latest["filename"], list(tables))
         return {}
 
-    out: dict[str, list[dict]] = {}
+    # Accept both SATELLITE (near-realtime) and MEASUREMENT (finalized) rows.
+    # CURRENT/ files typically carry SATELLITE data; MEASUREMENT arrives later.
+    seen: dict[tuple, str] = {}  # (region, ts) -> best type so far
+    by_key: dict[tuple, dict] = {}
     for row in rows:
-        if row.get("TYPE") != "MEASUREMENT":
+        row_type = row.get("TYPE", "")
+        if row_type not in ("MEASUREMENT", "SATELLITE"):
             continue
         region = row.get("REGIONID", "")
         if region not in REGIONS:
@@ -305,11 +309,21 @@ def fetch_rooftop_actual_nemweb(session: requests.Session, today_str: str) -> di
         except (ValueError, TypeError, KeyError):
             power = None
         ts = dt.strftime("%Y-%m-%dT%H:%M:%S+10:00")
-        out.setdefault(region, []).append({"ts": ts, "value": power})
+        key = (region, ts)
+        prev_type = seen.get(key)
+        # MEASUREMENT beats SATELLITE; first row wins within the same type.
+        if prev_type is None or (prev_type == "SATELLITE" and row_type == "MEASUREMENT"):
+            seen[key] = row_type
+            by_key[key] = {"ts": ts, "value": power}
+
+    out: dict[str, list[dict]] = {}
+    for (region, _), item in by_key.items():
+        out.setdefault(region, []).append(item)
 
     for r in out:
         out[r].sort(key=lambda p: p["ts"])
-    log.info("rooftop actual: %d regions", len(out))
+    log.info("rooftop actual: %d regions, type breakdown: %s",
+             len(out), {t: sum(1 for k, v in seen.items() if v == t) for t in set(seen.values())})
     return out
 
 

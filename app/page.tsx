@@ -18,11 +18,33 @@ import {
   type SelectableRegion,
 } from '@/lib/data';
 import { useLiveData } from '@/lib/useLiveData';
+import type { CurrentForecast, ForecastSeries } from '@/lib/live';
+
+/** Sum the 5 AEMO regions' POE50 forecast to produce a NEM aggregate series. */
+function sumNemForecast(cf: CurrentForecast): ForecastSeries | undefined {
+  const codes = ['NSW1', 'VIC1', 'QLD1', 'SA1', 'TAS1'] as const;
+  const available = codes.map((r) => cf.regions[r]).filter((s): s is ForecastSeries => s != null);
+  if (available.length === 0) return undefined;
+  const base = available[0];
+  const poe50 = base.intervals.map((_, i) => {
+    let total: number | null = 0;
+    for (const s of available) {
+      const v = s.poe50[i] ?? null;
+      if (v === null || total === null) {
+        total = null;
+        break;
+      }
+      total += v;
+    }
+    return total;
+  });
+  return { intervals: base.intervals, poe50 };
+}
 
 export default function Home() {
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
-  const [region, setRegion] = useState<SelectableRegion>('NSW1');
+  const [region, setRegion] = useState<SelectableRegion>('NEM');
   const [day, setDay] = useState<DayData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -169,7 +191,7 @@ export default function Home() {
   const liveDemandForecast = useMemo(() => {
     const cf = live.file?.currentForecast?.demand;
     if (!cf) return undefined;
-    const series = cf.regions[region];
+    const series = region === 'NEM' ? sumNemForecast(cf) : cf.regions[region];
     if (!series) return undefined;
     return { issuedAt: cf.issuedAt, ...series };
   }, [live.file, region]);
@@ -177,7 +199,7 @@ export default function Home() {
   const liveRooftopForecast = useMemo(() => {
     const cf = live.file?.currentForecast?.rooftopPv;
     if (!cf) return undefined;
-    const series = cf.regions[region];
+    const series = region === 'NEM' ? sumNemForecast(cf) : cf.regions[region];
     if (!series) return undefined;
     return { issuedAt: cf.issuedAt, ...series };
   }, [live.file, region]);
@@ -314,6 +336,7 @@ export default function Home() {
             stale={live.stale}
             lastUpdated={live.updatedAt}
             currentForecast={isLive ? liveRooftopForecast : undefined}
+            sparseActuals
           />
           {region === 'NEM' && (
             <p className="caveat">
