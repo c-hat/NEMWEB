@@ -17,7 +17,7 @@ import {
   type Rankings,
   type SelectableRegion,
 } from '@/lib/data';
-import { useLiveDemand, useLiveRooftop } from '@/lib/useLiveSeries';
+import { useLiveData } from '@/lib/useLiveData';
 
 export default function Home() {
   const [dates, setDates] = useState<string[]>([]);
@@ -158,10 +158,11 @@ export default function Home() {
   }, [day, region]);
 
   // Live view is active only when today.json is loaded and today is selected.
-  // The hook polls the Worker for 5-minute demand; it no-ops when inactive.
+  // One hook fetches the whole live-data file (all regions, both metrics); it
+  // no-ops when inactive. Region switches read from the file with no refetch.
   const isLive = !!todayDate && selectedDate === todayDate && !!todayData;
-  const liveDemand = useLiveDemand(region, isLive, todayDate ?? '');
-  const liveRooftop = useLiveRooftop(region, isLive, todayDate ?? '');
+  const live = useLiveData(isLive);
+  const liveRegion = live.file?.regions[region];
 
   // Top demand-error days for the currently selected region.
   const rankingList = rankings?.regions[region] ?? [];
@@ -280,19 +281,19 @@ export default function Home() {
             title={`${REGION_LABELS[region]} — Demand`}
             unit="MW"
             metric={regionData.demand}
-            liveActual={isLive ? liveDemand.points : undefined}
+            liveActual={isLive ? (liveRegion?.demand ?? []) : undefined}
             live={isLive}
-            stale={liveDemand.stale}
-            lastUpdated={liveDemand.lastUpdated}
+            stale={live.stale}
+            lastUpdated={live.updatedAt}
           />
           <ForecastChart
             title={`${REGION_LABELS[region]} — Rooftop PV`}
             unit="MW"
             metric={regionData.rooftopPv}
-            liveActual={isLive ? liveRooftop.points : undefined}
+            liveActual={isLive ? (liveRegion?.rooftopPv ?? []) : undefined}
             live={isLive}
-            stale={liveRooftop.stale}
-            lastUpdated={liveRooftop.lastUpdated}
+            stale={live.stale}
+            lastUpdated={live.updatedAt}
           />
           {region === 'NEM' && (
             <p className="caveat">

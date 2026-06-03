@@ -1,14 +1,18 @@
 /**
  * Live-data client for the in-progress trading day.
  *
- * All live fetches go through the Cloudflare Worker proxy (never directly to
- * OpenElectricity). Times are handled in AEST (UTC+10, no DST) to match AEMO,
- * independent of the viewer's local timezone.
+ * Live actuals are published as a single JSON file on the force-pushed
+ * `live-data` branch by the scheduled `live-data` GitHub Action, and read here
+ * over raw.githubusercontent.com — the same trust domain as the rest of the
+ * site, so it isn't blocked by corporate firewalls the way a third-party origin
+ * (the old Cloudflare Worker) can be. Times are AEST (UTC+10, no DST) to match
+ * AEMO, independent of the viewer's timezone.
  */
 
-/** Worker base URL. Build-time constant; override via NEXT_PUBLIC_WORKER_URL. */
-export const WORKER_URL =
-  process.env.NEXT_PUBLIC_WORKER_URL || 'https://nemweb-proxy.nemwebber.workers.dev';
+/** Live-data file URL. Build-time constant; override via NEXT_PUBLIC_LIVE_DATA_URL. */
+export const LIVE_DATA_URL =
+  process.env.NEXT_PUBLIC_LIVE_DATA_URL ||
+  'https://raw.githubusercontent.com/c-hat/NEMWEB/live-data/today-live.json';
 
 /** A single live observation. */
 export interface LivePoint {
@@ -16,63 +20,27 @@ export interface LivePoint {
   value: number | null;
 }
 
-export interface LiveResult {
-  points: LivePoint[];
-  /** Worker served last-known data because the upstream was unavailable. */
-  stale: boolean;
+/** One region's live series for the day. */
+export interface LiveRegion {
+  demand: LivePoint[];
+  rooftopPv: LivePoint[];
 }
 
-const AEST_PARTS = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Australia/Brisbane',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-  hour12: false,
-});
-
-/** Wall-clock time in AEST as an ISO string with a fixed +10:00 offset. */
-export function aestISO(d: Date = new Date()): string {
-  const p: Record<string, string> = {};
-  for (const part of AEST_PARTS.formatToParts(d)) p[part.type] = part.value;
-  const hour = p.hour === '24' ? '00' : p.hour; // en-CA emits 24 at midnight
-  return `${p.year}-${p.month}-${p.day}T${hour}:${p.minute}:${p.second}+10:00`;
+/** The published live-data file: all regions (incl. the NEM aggregate) in one object. */
+export interface LiveFile {
+  /** ISO timestamp of when the scheduled job last wrote the file. */
+  updatedAt: string;
+  /** Per-region series keyed by AEMO region code (NSW1 … TAS1) plus NEM. */
+  regions: Record<string, LiveRegion>;
 }
 
-/** AEST calendar date (YYYY-MM-DD). */
-export function aestToday(d: Date = new Date()): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Brisbane' }).format(d);
-}
-
-/** Midnight (00:00) AEST for a YYYY-MM-DD date, as an ISO string. */
-export function startOfAestDay(date: string): string {
-  return `${date}T00:00:00+10:00`;
-}
-
-/** Fetch a live series for [from, to] via the Worker. Throws on network/HTTP error. */
-async function fetchLive(
-  kind: 'demand' | 'rooftop',
-  region: string,
-  from: string,
-  to: string,
-): Promise<LiveResult> {
-  const url =
-    `${WORKER_URL}/${kind}?region=${encodeURIComponent(region)}` +
-    `&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-  const res = await fetch(url, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`worker ${res.status}`);
-  const body = (await res.json()) as { points?: LivePoint[] };
-  return { points: body.points ?? [], stale: res.headers.get('X-Stale') === 'true' };
-}
-
-/** 5-minute operational demand. */
-export function fetchLiveDemand(region: string, from: string, to: string): Promise<LiveResult> {
-  return fetchLive('demand', region, from, to);
-}
-
-/** 30-minute rooftop PV (native ASEFS2 cadence). */
-export function fetchLiveRooftop(region: string, from: string, to: string): Promise<LiveResult> {
-  return fetchLive('rooftop', region, from, to);
+/**
+ * Fetch the live-data file. A cache-busting query param defeats
+ * raw.githubusercontent.com's ~5-minute CDN cache, so each poll sees the latest
+ * force-pushed file rather than a stale edge copy. Throws on network/HTTP error.
+ */
+export async function fetchLiveFile(): Promise<LiveFile> {
+  const res = await fetch(`${LIVE_DATA_URL}?t=${Date.now()}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`live-data ${res.status}`);
+  return (await res.json()) as LiveFile;
 }

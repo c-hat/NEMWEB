@@ -311,7 +311,10 @@ export default function ForecastChart({
           {title} <span className="chart-unit">{unit}</span>
         </span>
         {live && (
-          <span className={`live-badge${stale ? ' stale' : ''}`}>
+          <span
+            className={`live-badge${stale ? ' stale' : ''}`}
+            title="Updated every ~10 min by a scheduled job."
+          >
             <span className="live-dot" />
             {stale
               ? `Stale · last update ${agoText(lastUpdated, now)}`
