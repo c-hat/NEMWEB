@@ -503,6 +503,22 @@ def _round_points(points: list[dict]) -> list[dict]:
     return [{"ts": p["ts"], "value": None if p["value"] is None else round(p["value"], 1)} for p in points]
 
 
+def merge_rooftop(prev: dict[str, list[dict]], fresh: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    """Merge a fresh single-interval fetch into the accumulated previous series.
+
+    NEMWEB ROOFTOP_PV/ACTUAL/ publishes only the most recent interval per run.
+    We grow the day's series by carrying all previous points forward and
+    overwriting / adding the new interval(s) from the fresh fetch.
+    """
+    out: dict[str, list[dict]] = {}
+    for r in set(list(prev) + list(fresh)):
+        by_ts: dict[str, dict] = {p["ts"]: p for p in prev.get(r, [])}
+        for p in fresh.get(r, []):
+            by_ts[p["ts"]] = p  # fresh overwrites prev for same timestamp
+        out[r] = sorted(by_ts.values(), key=lambda p: p["ts"])
+    return out
+
+
 # --- Carry-forward -------------------------------------------------------
 
 def carry_forward(prev_path: Path | None, today: str) -> tuple[dict, dict | None]:
@@ -606,8 +622,12 @@ def main(argv: list[str]) -> int:
         log.info("demand actuals: %d regions (%s)", len(got), ", ".join(got))
 
         # Rooftop actuals + forecasts: every ~30 min from NEMWEB, else carry forward.
+        # NEMWEB publishes only the most recent interval per file, so we always
+        # start from the previous accumulated series and merge the new point in.
         if _want_rooftop(now_aest.minute, args.force_rooftop):
-            rooftop = fetch_rooftop_actual_nemweb(nem_sess, today)
+            prev_rooftop, _ = carry_forward(args.prev, today)
+            fresh_rooftop = fetch_rooftop_actual_nemweb(nem_sess, today)
+            rooftop = merge_rooftop(prev_rooftop, fresh_rooftop)
             d_fc_issued, d_fc = fetch_demand_forecast_nemweb(nem_sess, today)
             r_fc_issued, r_fc = fetch_rooftop_forecast_nemweb(nem_sess, today)
             current_forecast: dict | None = {
@@ -615,9 +635,11 @@ def main(argv: list[str]) -> int:
                 "rooftopPv": {"issuedAt": r_fc_issued, "regions": r_fc},
             }
             log.info(
-                "rooftop/forecast: fetched (minute=%d, forced=%s); "
+                "rooftop/forecast: fetched+merged (minute=%d, forced=%s); "
+                "%d rooftop points/region after merge; "
                 "demand fcst issued=%s (%d regions), rooftop fcst issued=%s (%d regions)",
                 now_aest.minute, args.force_rooftop,
+                max((len(v) for v in rooftop.values()), default=0),
                 d_fc_issued, len(d_fc), r_fc_issued, len(r_fc),
             )
         else:
