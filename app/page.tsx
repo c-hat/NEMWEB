@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import ForecastErrorChart from '@/components/ForecastErrorChart';
 import ForecastChart from '@/components/ForecastChart';
 import { downloadCsv, regionDataToCsv } from '@/lib/csv';
 import {
@@ -315,7 +316,7 @@ export default function Home() {
       {error && <p className="error">Error loading data: {error}</p>}
       {loading && !error && <p className="status">Loading…</p>}
 
-      {!loading && !error && regionData && (
+      {!loading && !error && day && regionData && (
         <section className="charts">
           <ForecastChart
             title={`${REGION_LABELS[region]} — Demand`}
@@ -337,6 +338,11 @@ export default function Home() {
             lastUpdated={live.updatedAt}
             currentForecast={isLive ? liveRooftopForecast : undefined}
             sparseActuals
+          />
+          <ForecastErrorChart
+            regions={day.regions}
+            region={region}
+            liveRegions={isLive ? (live.file?.regions ?? {}) : undefined}
           />
           {region === 'NEM' && (
             <p className="caveat">

@@ -297,6 +297,10 @@ body {
   height: 360px;
 }
 
+.forecast-error-card .chart-body {
+  height: 340px;
+}
+
 .chart-tooltip {
   width: 180px;
   padding: 7px 9px;
@@ -328,6 +332,10 @@ body {
 
 .chart-tooltip .tt-row + .tt-row {
   margin-top: 2px;
+}
+
+.forecast-error-tooltip {
+  width: 204px;
 }
 
 .caveat {
