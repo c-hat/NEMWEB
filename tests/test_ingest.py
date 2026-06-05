@@ -16,18 +16,37 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
-from datetime import date
+import hashlib
+from datetime import date, datetime
 from pathlib import Path
 
 # Make the ingest package importable regardless of where pytest is invoked.
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "ingest"))
 
-from nemweb import LocalSource, HttpSource, make_source  # noqa: E402
-from ingest import build_day_payload, build_today_payload, ingest_day  # noqa: E402
+from nemweb import AEST, LocalSource, HttpSource, make_source  # noqa: E402
+from nemweb import DirectoryEntry  # noqa: E402
+from dataset_contracts import NormalizedDay  # noqa: E402
+from ingest import (  # noqa: E402
+    NemwebDayAdapter,
+    SourceDataUnavailable,
+    _forecast_cutoff,
+    _interval_grid,
+    _region_blocks,
+    build_day_payload,
+    build_normalized_day,
+    build_today_payload,
+    fetch_demand_actual,
+    fetch_demand_forecast,
+    fetch_rooftop_actual,
+    fetch_rooftop_forecast,
+    ingest_day,
+    project_day_payload,
+)
 
 FIXTURES = _ROOT / "tests" / "fixtures" / "nemweb"
 TRADING_DAY = date(2026, 5, 28)
+EXPECTED_DAY_SHA256 = "2be9f8ff255d0011332e3a5a8d88fa1759aab5074689c32fce799b034409b115"
 
 
 def _payload() -> dict:
@@ -41,6 +60,10 @@ def test_payload_shape_and_issue_time():
     # ignore the post-cutoff 18:00 snapshot.
     assert p["forecastIssuedAt"] == "2026-05-27T15:30+10:00"
     assert set(p["regions"]) == {"NSW1", "VIC1", "QLD1", "SA1", "TAS1"}
+
+
+def test_current_day_ahead_cutoff_is_17_aest():
+    assert _forecast_cutoff(TRADING_DAY) == datetime(2026, 5, 27, 17, 0, tzinfo=AEST)
 
 
 def test_intervals_straddle_midnight():
@@ -113,6 +136,103 @@ def test_today_payload_has_forecast_but_empty_actuals():
     # ...but every actual slot is null, for both metrics, all 48 intervals.
     assert nsw["demand"]["actual"] == [None] * 48
     assert nsw["rooftopPv"]["actual"] == [None] * 48
+
+
+def test_normalized_projection_matches_legacy_payload_bytes():
+    source = LocalSource(FIXTURES)
+    intervals, interval_iso = _interval_grid(TRADING_DAY)
+    demand_fc, demand_fc_entry = fetch_demand_forecast(TRADING_DAY, source)
+    demand_actual = fetch_demand_actual(TRADING_DAY, source)
+    rooftop_fc, _ = fetch_rooftop_forecast(TRADING_DAY, source)
+    rooftop_actual = fetch_rooftop_actual(TRADING_DAY, source)
+    issued = demand_fc_entry.timestamp.strftime("%Y-%m-%dT%H:%M%z").replace("+1000", "+10:00")
+    legacy_payload = {
+        "tradingDate": TRADING_DAY.isoformat(),
+        "forecastIssuedAt": issued,
+        "regions": _region_blocks(
+            demand_fc, rooftop_fc, demand_actual, rooftop_actual, intervals, interval_iso
+        ),
+    }
+
+    normalized = build_normalized_day(TRADING_DAY, NemwebDayAdapter(source))
+    projected = project_day_payload(normalized)
+
+    assert json.dumps(projected, separators=(",", ":")) == json.dumps(
+        legacy_payload, separators=(",", ":")
+    )
+    assert list(projected) == ["tradingDate", "forecastIssuedAt", "regions"]
+    assert list(projected["regions"]) == ["NSW1", "VIC1", "QLD1", "SA1", "TAS1"]
+    assert list(projected["regions"]["NSW1"]["demand"]) == [
+        "intervals", "poe10", "poe50", "poe90", "actual"
+    ]
+
+
+def test_compatibility_payload_matches_pinned_fixture_hash():
+    compact = json.dumps(_payload(), separators=(",", ":"))
+    assert len(compact) == 24460
+    assert hashlib.sha256(compact.encode()).hexdigest() == EXPECTED_DAY_SHA256
+
+
+def test_normalized_dataset_metadata_is_source_agnostic():
+    normalized = build_normalized_day(TRADING_DAY, NemwebDayAdapter(LocalSource(FIXTURES)))
+    assert normalized.trading_date == "2026-05-28"
+    demand = normalized.datasets["demandForecast"]
+    assert demand.id == "aemo-nemweb.demand.forecast.2026-05-28"
+    assert demand.metric == "demand"
+    assert demand.kind == "forecast"
+    assert demand.cadence == "30m"
+    assert demand.units == "MW"
+    assert demand.interval_timezone == "AEST+10:00"
+    assert demand.regions == ["NSW1", "VIC1", "QLD1", "SA1", "TAS1"]
+
+
+def test_source_adapter_can_be_stubbed_without_nemweb_code():
+    class StubAdapter:
+        id = "stub"
+
+        def build_day(self, trading_day: date, include_actuals: bool = True) -> NormalizedDay:
+            return NormalizedDay(
+                trading_date=trading_day.isoformat(),
+                forecast_issued_at="2026-05-27T17:00+10:00",
+                datasets={},
+            )
+
+    normalized = build_normalized_day(TRADING_DAY, StubAdapter())
+    assert normalized.trading_date == "2026-05-28"
+
+
+def test_current_rolloff_is_explicit(tmp_path):
+    empty_source = LocalSource(tmp_path)
+    try:
+        build_day_payload(TRADING_DAY, empty_source)
+    except SourceDataUnavailable as exc:
+        assert "Reports/Current may have rolled off" in str(exc)
+        assert exc.archive_hint is True
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected SourceDataUnavailable")
+
+
+def test_non_empty_current_rolloff_is_explicit():
+    class FutureOnlySource:
+        def list_directory(self, rel_path: str) -> list[DirectoryEntry]:
+            return [
+                DirectoryEntry(
+                    "future_202606010000.zip",
+                    "unused",
+                    datetime(2026, 6, 1, 0, 0, tzinfo=AEST),
+                )
+            ]
+
+        def read_tables(self, entry: DirectoryEntry) -> dict:
+            raise AssertionError("read_tables should not run")
+
+    try:
+        build_day_payload(TRADING_DAY, FutureOnlySource())
+    except SourceDataUnavailable as exc:
+        assert "Reports/Current may have rolled off" in str(exc)
+        assert exc.archive_hint is True
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected SourceDataUnavailable")
 
 
 def test_ingest_day_writes_outputs():

@@ -1,7 +1,10 @@
 # nemweb-live-pinger (Cloudflare Worker)
 
-A cron-only Cloudflare Worker that keeps the NEMWEB **`live-data`** GitHub
-Action firing on a reliable ~10-minute cadence.
+A Cloudflare Worker that currently does two jobs:
+
+- keeps the NEMWEB **`live-data`** GitHub Action firing on a reliable
+  ~10-minute cadence
+- serves the migration compatibility API under `/api/*`
 
 **Why it exists**
 
@@ -12,9 +15,10 @@ refresh. A `workflow_dispatch`, by contrast, starts within **~20 s**. So every
 (Worker → GitHub API), so — unlike the old data-proxy this replaced — it is
 never hit by the browser and a corporate firewall is irrelevant.
 
-The live data itself is produced by the workflow (`scripts/fetch_live.py`) and
-force-pushed to the `live-data` branch, which the frontend reads over
-`raw.githubusercontent.com`. This Worker only pulls the trigger.
+The live data itself is still produced by the workflow (`scripts/fetch_live.py`)
+and force-pushed to the `live-data` branch. During migration, `/api/live` hides
+that fallback location from the browser and will read R2 `compat/live.json` once
+storage is provisioned.
 
 ## How it works
 
@@ -26,11 +30,40 @@ force-pushed to the `live-data` branch, which the frontend reads over
   with body `{"ref":"main"}`, authenticated by the `GH_DISPATCH_TOKEN` secret.
 - A success is HTTP `204`. `401` means the token is invalid; `404` usually means
   it lacks the `Actions: write` permission. Failures are logged (`wrangler tail`).
-- The `fetch` handler is a health check only — it serves no data and triggers
-  nothing, so the public `workers.dev` URL can't be used to burn the OE budget.
+- The `fetch` handler serves a health check at `/` and compatibility JSON under
+  `/api/*`. It triggers nothing, so the public `workers.dev` URL can't be used
+  to burn the OE budget.
 
 Budget: ~6 dispatches/hour × ~18 active hours ≈ 108 demand + ~36 rooftop OE
 requests/day, well under OE's 500/day free-tier cap.
+
+## Compatibility API
+
+Endpoints:
+
+- `GET /api/days`
+- `GET /api/latest`
+- `GET /api/day/:date`
+- `GET /api/live`
+- `GET /api/catalog`
+- `GET /api/analyses`
+- `GET /api/analyses/:id`
+
+Current behavior:
+
+- If R2/D1 bindings are present, compatibility payloads are read from R2
+  `compat/*`, and catalog responses come from D1 via `src/storage.ts`.
+- Until bindings are provisioned, `/api/days`, `/api/latest`, `/api/day/:date`,
+  and `/api/live` fall back to the current GitHub-hosted compatibility files.
+- `/api/catalog` and `/api/analyses` return empty compatible responses without
+  D1. `/api/analyses/:id` returns a JSON 404 until analysis storage exists.
+
+Optional variables:
+
+- `DATA_FALLBACK_BASE_URL`: base URL for static compatibility files. Defaults to
+  `https://raw.githubusercontent.com/c-hat/NEMWEB/main/public`.
+- `LIVE_DATA_URL`: fallback live JSON URL. Defaults to the `live-data` branch.
+- `ALLOWED_ORIGIN`: CORS allow-origin value. Defaults to `*`.
 
 ## Setup
 
@@ -40,7 +73,8 @@ automatically).
 
 1. **Deploy the Worker.** Either let the `deploy-worker` GitHub Action do it
    (it runs on push to `worker/**`, using the `CLOUDFLARE_API_TOKEN` repo
-   secret), or deploy locally:
+   secret), or deploy locally. If `NEMWEB_D1_DATABASE_NAME` is configured as a
+   repository variable, CI applies D1 migrations before deploy.
 
    ```bash
    export CLOUDFLARE_API_TOKEN=your_token_here   # do not commit
@@ -73,6 +107,14 @@ npx wrangler tail            # watch live logs; expect a "dispatched … -> 204"
 
 A successful dispatch shows up as a new `live-data` workflow run in the GitHub
 Actions tab and a fresh `today-live.json` on the `live-data` branch within ~30 s.
+
+API smoke checks:
+
+```bash
+curl https://<worker-host>/api/days
+curl https://<worker-host>/api/latest
+curl https://<worker-host>/api/catalog
+```
 
 ## Local dev
 

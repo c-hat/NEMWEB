@@ -12,6 +12,24 @@ compatibility_date = "2026-06-01"
 [triggers]
 crons = ["*/10 * * * *"]
 
+[[r2_buckets]]
+binding = "NEMWEB_BUCKET"
+bucket_name = "nemweb-data-prod"
+
+[[d1_databases]]
+binding = "NEMWEB_DB"
+database_name = "nemweb-catalog-prod"
+database_id = "cb7b05b5-64fb-4fad-94dc-f0566f480a36"
+migrations_dir = "migrations"
+
+[vars]
+DATA_FALLBACK_BASE_URL = "https://raw.githubusercontent.com/c-hat/NEMWEB/main/public"
+LIVE_DATA_URL = "https://raw.githubusercontent.com/c-hat/NEMWEB/live-data/today-live.json"
+ALLOWED_ORIGIN = "https://nemweb.pages.dev"
+
+[observability.logs]
+enabled = true
+
 # GH_DISPATCH_TOKEN is a SECRET (a fine-grained GitHub PAT with Actions: Read
 # and write on c-hat/NEMWEB) and must NOT live here. Set it once on the Worker:
 #   npx wrangler secret put GH_DISPATCH_TOKEN

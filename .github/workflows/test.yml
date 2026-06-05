@@ -9,7 +9,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  python:
+    name: python ingest and analysis
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,3 +25,43 @@ jobs:
       - name: Run tests
         working-directory: ingest
         run: uv run python -m pytest -q
+
+  frontend:
+    name: frontend vitest and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm run test
+
+      - name: Build static frontend
+        run: npm run build
+
+  worker:
+    name: worker typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install worker deps
+        working-directory: worker
+        run: npm ci
+
+      - name: Typecheck worker
+        working-directory: worker
+        run: npm run typecheck

@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "publish:cloudflare": "python3 scripts/publish_cloudflare.py",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "next": "15.5.18",
@@ -15,9 +18,14 @@
     "recharts": "2.15.0"
   },
   "devDependencies": {
-    "@types/node": "22.10.7",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^22.19.19",
     "@types/react": "19.0.7",
     "@types/react-dom": "19.0.3",
-    "typescript": "5.7.3"
+    "@vitejs/plugin-react": "^6.0.2",
+    "jsdom": "^29.1.1",
+    "typescript": "5.7.3",
+    "vitest": "^4.1.8"
   }
 }

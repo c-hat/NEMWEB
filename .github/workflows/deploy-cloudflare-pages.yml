@@ -1,0 +1,47 @@
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+      NEMWEB_API_BASE_URL: ${{ vars.NEMWEB_API_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build static export
+        env:
+          NEXT_PUBLIC_DATA_SOURCE: api
+          NEXT_PUBLIC_API_BASE_URL: ${{ env.NEMWEB_API_BASE_URL }}
+        run: npm run build
+
+      - name: Deploy to Cloudflare Pages
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_PAGES_PROJECT:-}" ] || [ -z "${NEMWEB_API_BASE_URL:-}" ]; then
+            echo "Cloudflare Pages deploy skipped: set CLOUDFLARE_API_TOKEN secret, CLOUDFLARE_PAGES_PROJECT variable, and NEMWEB_API_BASE_URL variable."
+            exit 0
+          fi
+          npx wrangler pages deploy out --project-name "$CLOUDFLARE_PAGES_PROJECT" --branch main

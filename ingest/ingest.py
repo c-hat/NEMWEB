@@ -1,9 +1,9 @@
 """NEMWEB forecast tracker ingestion CLI.
 
 For a given trading day D (in AEST), pulls:
-  - the day-ahead operational demand forecast snapshot issued ~D-1 16:00 AEST,
+  - the day-ahead operational demand forecast snapshot issued by D-1 17:00 AEST,
   - the realised operational demand for D,
-  - the day-ahead rooftop PV forecast snapshot issued ~D-1 16:00 AEST,
+  - the day-ahead rooftop PV forecast snapshot issued by D-1 17:00 AEST,
   - the realised rooftop PV (TYPE=MEASUREMENT) for D,
 then writes one JSON per day into the output directory along with
 latest.json and index.json pointers.
@@ -32,14 +32,26 @@ from pathlib import Path
 
 import pandas as pd
 
-from nemweb import (
-    AEST,
-    DirectoryEntry,
-    Source,
-    entries_in_range,
-    make_source,
-    pick_snapshot_at_or_before,
-)
+if __package__:
+    from .dataset_contracts import NormalizedDataset, NormalizedDay, SourceAdapter
+    from .nemweb import (
+        AEST,
+        DirectoryEntry,
+        Source,
+        entries_in_range,
+        make_source,
+        pick_snapshot_at_or_before,
+    )
+else:  # pragma: no cover - script execution path
+    from dataset_contracts import NormalizedDataset, NormalizedDay, SourceAdapter
+    from nemweb import (
+        AEST,
+        DirectoryEntry,
+        Source,
+        entries_in_range,
+        make_source,
+        pick_snapshot_at_or_before,
+    )
 
 
 log = logging.getLogger("ingest")
@@ -51,6 +63,16 @@ PATH_DEMAND_FORECAST = "Reports/Current/Operational_Demand/FORECAST_HH"
 PATH_DEMAND_ACTUAL = "Reports/Current/Operational_Demand/ACTUAL_HH"
 PATH_ROOFTOP_FORECAST = "Reports/Current/ROOFTOP_PV/FORECAST"
 PATH_ROOFTOP_ACTUAL = "Reports/Current/ROOFTOP_PV/ACTUAL"
+
+
+class SourceDataUnavailable(RuntimeError):
+    """Raised when current report files are unavailable for a trading day."""
+
+    def __init__(self, message: str, *, archive_hint: bool = False):
+        if archive_hint:
+            message = f"{message}; Reports/Current may have rolled off and ARCHIVE fallback is pending"
+        super().__init__(message)
+        self.archive_hint = archive_hint
 
 
 def half_hour_intervals(trading_day: date_cls) -> list[datetime]:
@@ -105,22 +127,25 @@ def _series_for_region(
 # --- Demand --------------------------------------------------------------
 
 def _forecast_cutoff(trading_day: date_cls) -> datetime:
-    """Latest issue time we'll accept for a day-ahead snapshot: D-1 17:00 AEST.
-
-    The brief targets the ~D-1 16:00 snapshot; allowing up to 17:00 lets the
-    picker fall back to the most recent earlier snapshot when the exact 16:00
-    file is missing.
-    """
+    """Latest issue time accepted for the day-ahead snapshot: D-1 17:00 AEST."""
     return datetime(trading_day.year, trading_day.month, trading_day.day, tzinfo=AEST) - timedelta(hours=7)
 
 
 def fetch_demand_forecast(trading_day: date_cls, source: Source) -> tuple[pd.DataFrame, DirectoryEntry]:
-    """Pick the forecast snapshot issued nearest D-1 16:00 AEST and return its rows."""
+    """Pick the forecast snapshot issued at or before D-1 17:00 AEST and return its rows."""
     cutoff = _forecast_cutoff(trading_day)
     entries = source.list_directory(PATH_DEMAND_FORECAST)
+    if not entries:
+        raise SourceDataUnavailable(
+            f"No demand forecast files listed under {PATH_DEMAND_FORECAST}",
+            archive_hint=True,
+        )
     chosen = pick_snapshot_at_or_before(entries, cutoff)
     if chosen is None:
-        raise RuntimeError(f"No demand forecast snapshot at or before {cutoff.isoformat()}")
+        raise SourceDataUnavailable(
+            f"No demand forecast snapshot at or before {cutoff.isoformat()}",
+            archive_hint=True,
+        )
     log.info("demand forecast snapshot: %s (issued %s)", chosen.filename, chosen.timestamp)
     tables = source.read_tables(chosen)
     # AEMO publishes this as "OPERATIONAL_DEMAND" report with "FORECAST_HH" table,
@@ -142,9 +167,17 @@ def fetch_demand_actual(trading_day: date_cls, source: Source) -> pd.DataFrame:
     start = datetime(trading_day.year, trading_day.month, trading_day.day, tzinfo=AEST)
     end = start + timedelta(days=1)
     entries = source.list_directory(PATH_DEMAND_ACTUAL)
+    if not entries:
+        raise SourceDataUnavailable(
+            f"No demand actual files listed under {PATH_DEMAND_ACTUAL}",
+            archive_hint=True,
+        )
     in_window = entries_in_range(entries, start, end + timedelta(hours=6))  # slop for late files
     if not in_window:
-        raise RuntimeError(f"No demand actual files in window {start.isoformat()}..{end.isoformat()}")
+        raise SourceDataUnavailable(
+            f"No demand actual files in window {start.isoformat()}..{end.isoformat()}",
+            archive_hint=True,
+        )
     frames: list[pd.DataFrame] = []
     for e in in_window:
         tables = source.read_tables(e)
@@ -162,9 +195,17 @@ def fetch_demand_actual(trading_day: date_cls, source: Source) -> pd.DataFrame:
 def fetch_rooftop_forecast(trading_day: date_cls, source: Source) -> tuple[pd.DataFrame, DirectoryEntry]:
     cutoff = _forecast_cutoff(trading_day)
     entries = source.list_directory(PATH_ROOFTOP_FORECAST)
+    if not entries:
+        raise SourceDataUnavailable(
+            f"No rooftop PV forecast files listed under {PATH_ROOFTOP_FORECAST}",
+            archive_hint=True,
+        )
     chosen = pick_snapshot_at_or_before(entries, cutoff)
     if chosen is None:
-        raise RuntimeError(f"No rooftop PV forecast snapshot at or before {cutoff.isoformat()}")
+        raise SourceDataUnavailable(
+            f"No rooftop PV forecast snapshot at or before {cutoff.isoformat()}",
+            archive_hint=True,
+        )
     log.info("rooftop forecast snapshot: %s (issued %s)", chosen.filename, chosen.timestamp)
     tables = source.read_tables(chosen)
     for key, df in tables.items():
@@ -178,9 +219,17 @@ def fetch_rooftop_actual(trading_day: date_cls, source: Source) -> pd.DataFrame:
     start = datetime(trading_day.year, trading_day.month, trading_day.day, tzinfo=AEST)
     end = start + timedelta(days=1)
     entries = source.list_directory(PATH_ROOFTOP_ACTUAL)
+    if not entries:
+        raise SourceDataUnavailable(
+            f"No rooftop actual files listed under {PATH_ROOFTOP_ACTUAL}",
+            archive_hint=True,
+        )
     in_window = entries_in_range(entries, start, end + timedelta(hours=6))
     if not in_window:
-        raise RuntimeError(f"No rooftop actual files in window {start.isoformat()}..{end.isoformat()}")
+        raise SourceDataUnavailable(
+            f"No rooftop actual files in window {start.isoformat()}..{end.isoformat()}",
+            archive_hint=True,
+        )
     frames: list[pd.DataFrame] = []
     for e in in_window:
         tables = source.read_tables(e)
@@ -248,26 +297,160 @@ def _region_blocks(
     return regions_payload
 
 
-def build_day_payload(trading_day: date_cls, source: Source) -> dict:
-    intervals, interval_iso = _interval_grid(trading_day)
-
-    demand_fc, demand_fc_entry = fetch_demand_forecast(trading_day, source)
-    demand_actual = fetch_demand_actual(trading_day, source)
-    rooftop_fc, rooftop_fc_entry = fetch_rooftop_forecast(trading_day, source)
-    rooftop_actual = fetch_rooftop_actual(trading_day, source)
-
-    # Issue time recorded as the snapshot whose timestamp drove the demand pick
-    # (demand and rooftop snapshots may differ slightly; we report demand's).
-    issued = demand_fc_entry.timestamp.strftime("%Y-%m-%dT%H:%M%z").replace("+1000", "+10:00")
-
-    regions_payload = _region_blocks(
-        demand_fc, rooftop_fc, demand_actual, rooftop_actual, intervals, interval_iso
+def _dataset(
+    *,
+    trading_day: date_cls,
+    source_id: str,
+    metric: str,
+    kind: str,
+    intervals: list[str],
+    values: dict[str, dict[str, list[float | None]]],
+) -> NormalizedDataset:
+    return NormalizedDataset(
+        id=f"{source_id}.{metric}.{kind}.{trading_day.isoformat()}",
+        source=source_id,
+        metric=metric,
+        kind=kind,
+        cadence="30m",
+        units="MW",
+        interval_timezone="AEST+10:00",
+        intervals=intervals,
+        regions=REGIONS.copy(),
+        values=values,
     )
+
+
+class NemwebDayAdapter:
+    """NEMWEB adapter that emits normalized day datasets."""
+
+    id = "aemo-nemweb"
+
+    def __init__(self, source: Source):
+        self.source = source
+
+    def build_day(self, trading_day: date_cls, include_actuals: bool = True) -> NormalizedDay:
+        intervals, interval_iso = _interval_grid(trading_day)
+
+        demand_fc, demand_fc_entry = fetch_demand_forecast(trading_day, self.source)
+        rooftop_fc, _ = fetch_rooftop_forecast(trading_day, self.source)
+        demand_actual = fetch_demand_actual(trading_day, self.source) if include_actuals else None
+        rooftop_actual = fetch_rooftop_actual(trading_day, self.source) if include_actuals else None
+
+        issued = demand_fc_entry.timestamp.strftime("%Y-%m-%dT%H:%M%z").replace("+1000", "+10:00")
+
+        demand_forecast_values: dict[str, dict[str, list[float | None]]] = {}
+        rooftop_forecast_values: dict[str, dict[str, list[float | None]]] = {}
+        demand_actual_values: dict[str, dict[str, list[float | None]]] = {}
+        rooftop_actual_values: dict[str, dict[str, list[float | None]]] = {}
+
+        empty = [None] * len(intervals)
+        for region in REGIONS:
+            demand_forecast_values[region] = {
+                "poe10": _series_for_region(demand_fc, region, "OPERATIONAL_DEMAND_POE10", intervals),
+                "poe50": _series_for_region(demand_fc, region, "OPERATIONAL_DEMAND_POE50", intervals),
+                "poe90": _series_for_region(demand_fc, region, "OPERATIONAL_DEMAND_POE90", intervals),
+            }
+            rooftop_forecast_values[region] = {
+                "poe10": _series_for_region(rooftop_fc, region, "POWERPOEHIGH", intervals),
+                "poe50": _series_for_region(rooftop_fc, region, "POWERPOE50", intervals),
+                "poe90": _series_for_region(rooftop_fc, region, "POWERPOELOW", intervals),
+            }
+            demand_actual_values[region] = {
+                "actual": list(empty)
+                if demand_actual is None
+                else _series_for_region(demand_actual, region, "OPERATIONAL_DEMAND", intervals),
+            }
+            rooftop_actual_values[region] = {
+                "actual": list(empty)
+                if rooftop_actual is None
+                else _series_for_region(rooftop_actual, region, "POWER", intervals),
+            }
+
+        datasets = {
+            "demandForecast": _dataset(
+                trading_day=trading_day,
+                source_id=self.id,
+                metric="demand",
+                kind="forecast",
+                intervals=interval_iso,
+                values=demand_forecast_values,
+            ),
+            "demandActual": _dataset(
+                trading_day=trading_day,
+                source_id=self.id,
+                metric="demand",
+                kind="actual",
+                intervals=interval_iso,
+                values=demand_actual_values,
+            ),
+            "rooftopPvForecast": _dataset(
+                trading_day=trading_day,
+                source_id=self.id,
+                metric="rooftopPv",
+                kind="forecast",
+                intervals=interval_iso,
+                values=rooftop_forecast_values,
+            ),
+            "rooftopPvActual": _dataset(
+                trading_day=trading_day,
+                source_id=self.id,
+                metric="rooftopPv",
+                kind="actual",
+                intervals=interval_iso,
+                values=rooftop_actual_values,
+            ),
+        }
+        return NormalizedDay(
+            trading_date=trading_day.isoformat(),
+            forecast_issued_at=issued,
+            datasets=datasets,
+        )
+
+
+def build_normalized_day(
+    trading_day: date_cls,
+    adapter: SourceAdapter,
+    *,
+    include_actuals: bool = True,
+) -> NormalizedDay:
+    return adapter.build_day(trading_day, include_actuals=include_actuals)
+
+
+def project_day_payload(day: NormalizedDay) -> dict:
+    """Project normalized datasets to the current frontend compatibility JSON."""
+    demand_fc = day.datasets["demandForecast"]
+    demand_actual = day.datasets["demandActual"]
+    rooftop_fc = day.datasets["rooftopPvForecast"]
+    rooftop_actual = day.datasets["rooftopPvActual"]
+
+    regions_payload: dict[str, dict] = {}
+    for region in REGIONS:
+        regions_payload[region] = {
+            "demand": {
+                "intervals": demand_fc.intervals,
+                "poe10": demand_fc.values[region]["poe10"],
+                "poe50": demand_fc.values[region]["poe50"],
+                "poe90": demand_fc.values[region]["poe90"],
+                "actual": demand_actual.values[region]["actual"],
+            },
+            "rooftopPv": {
+                "intervals": rooftop_fc.intervals,
+                "poe10": rooftop_fc.values[region]["poe10"],
+                "poe50": rooftop_fc.values[region]["poe50"],
+                "poe90": rooftop_fc.values[region]["poe90"],
+                "actual": rooftop_actual.values[region]["actual"],
+            },
+        }
     return {
-        "tradingDate": trading_day.isoformat(),
-        "forecastIssuedAt": issued,
+        "tradingDate": day.trading_date,
+        "forecastIssuedAt": day.forecast_issued_at,
         "regions": regions_payload,
     }
+
+
+def build_day_payload(trading_day: date_cls, source: Source) -> dict:
+    normalized = build_normalized_day(trading_day, NemwebDayAdapter(source), include_actuals=True)
+    return project_day_payload(normalized)
 
 
 def build_today_payload(trading_day: date_cls, source: Source) -> dict:
@@ -276,22 +459,10 @@ def build_today_payload(trading_day: date_cls, source: Source) -> dict:
     Same shape as ``build_day_payload`` (so the frontend loads ``today.json``
     identically to any dated file) but with empty ``actual`` arrays: live
     actuals are layered in client-side from the Cloudflare Worker, not baked
-    into the file. Only the forecast plume (issued ~D-1 16:00) is fetched.
+    into the file. Only the day-ahead forecast plume is fetched.
     """
-    intervals, interval_iso = _interval_grid(trading_day)
-
-    demand_fc, demand_fc_entry = fetch_demand_forecast(trading_day, source)
-    rooftop_fc, _ = fetch_rooftop_forecast(trading_day, source)
-    issued = demand_fc_entry.timestamp.strftime("%Y-%m-%dT%H:%M%z").replace("+1000", "+10:00")
-
-    regions_payload = _region_blocks(
-        demand_fc, rooftop_fc, None, None, intervals, interval_iso
-    )
-    return {
-        "tradingDate": trading_day.isoformat(),
-        "forecastIssuedAt": issued,
-        "regions": regions_payload,
-    }
+    normalized = build_normalized_day(trading_day, NemwebDayAdapter(source), include_actuals=False)
+    return project_day_payload(normalized)
 
 
 def write_outputs(payload: dict, out_dir: Path) -> Path:

@@ -16,7 +16,7 @@ import {
   type DayData,
   type Rankings,
   type SelectableRegion,
-} from '@/lib/data';
+} from '@/lib/dataClient';
 import { useLiveData } from '@/lib/useLiveData';
 import type { CurrentForecast, ForecastSeries } from '@/lib/live';
 

@@ -447,6 +447,23 @@ def parse_regions(body: dict) -> dict[str, list[dict]]:
     return out
 
 
+def build_rooftop(body: dict) -> dict[str, list[dict]]:
+    """Map OE rooftop energy rows to MW points and smooth held readings.
+
+    Older live tests exercise this pure helper even though rooftop actuals now
+    come from NEMWEB. Keeping it here preserves the documented parser behavior
+    and makes it available for a future OE live adapter if needed.
+    """
+    out: dict[str, list[dict]] = {}
+    for region, points in parse_regions(body).items():
+        converted = [
+            {"ts": p["ts"], "value": None if p["value"] is None else p["value"] * 12}
+            for p in points
+        ]
+        out[region] = smooth_held(converted)
+    return out
+
+
 # --- Rooftop smoothing (for carried-forward legacy) ----------------------
 
 def _parse_ms(ts: str) -> int:
@@ -547,6 +564,12 @@ def carry_forward(prev_path: Path | None, today: str) -> tuple[dict, dict | None
 
     forecast = prev.get("currentForecast") or None
     return out, forecast
+
+
+def carry_forward_rooftop(prev_path: Path | None, today: str) -> dict[str, list[dict]]:
+    """Compatibility wrapper returning only carried rooftop actuals."""
+    rooftop, _ = carry_forward(prev_path, today)
+    return rooftop
 
 
 # --- Assembly ------------------------------------------------------------

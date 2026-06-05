@@ -12,7 +12,18 @@ which the static frontend reads to populate the "Largest demand errors" menu.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from analysis.registry import (
+    compatibility_rankings,
+    forecast_error_ranking_payload,
+    normalized_day_from_compat,
+)
 
 REGIONS = ["NSW1", "VIC1", "QLD1", "SA1", "TAS1"]
 TOP_N = 15
@@ -59,32 +70,11 @@ def _entry(date: str, mae: tuple[float, float, int]) -> dict:
 
 
 def compute_rankings(out_dir: Path, top_n: int = TOP_N) -> dict:
-    per_region: dict[str, list[dict]] = {r: [] for r in REGIONS}
-    per_region["NEM"] = []
-
-    for p in sorted(out_dir.glob("[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json")):
+    days = []
+    for p in sorted(Path(out_dir).glob("[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json")):
         day = json.loads(p.read_text())
-        date = day["tradingDate"]
-        regions = day["regions"]
-        for r in REGIONS:
-            d = regions[r]["demand"]
-            mae = _mae(d["poe50"], d["actual"])
-            if mae is not None:
-                per_region[r].append(_entry(date, mae))
-        nem = _mae(_nem_series(regions, "poe50"), _nem_series(regions, "actual"))
-        if nem is not None:
-            per_region["NEM"].append(_entry(date, nem))
-
-    ranked = {
-        region: sorted(rows, key=lambda e: e["maeMw"], reverse=True)[:top_n]
-        for region, rows in per_region.items()
-    }
-    return {
-        "metric": "daily_mean_abs_demand_error_mw",
-        "description": "Top days by mean absolute error between actual demand and day-ahead POE50.",
-        "topN": top_n,
-        "regions": ranked,
-    }
+        days.append(normalized_day_from_compat(day))
+    return compatibility_rankings(forecast_error_ranking_payload(days, top_n=top_n))
 
 
 def write_rankings(out_dir: Path, top_n: int = TOP_N) -> Path:
