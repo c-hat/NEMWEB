@@ -46,7 +46,7 @@ jobs:
         run: npm run test
 
       - name: Apply D1 migrations
-        if: ${{ vars.NEMWEB_D1_DATABASE_NAME != '' }}
+        if: ${{ vars.NEMWEB_APPLY_D1_MIGRATIONS == 'true' && vars.NEMWEB_D1_DATABASE_NAME != '' }}
         working-directory: worker
         run: npx wrangler d1 migrations apply "$NEMWEB_D1_DATABASE_NAME" --remote
         env:
