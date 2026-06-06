@@ -1,83 +1,214 @@
 # NEMWEB
 
-Tracking NEM data: a static frontend that visualises AEMO half-hourly demand
-and rooftop PV forecasts (POE bands) against actuals.
+NEMWEB visualises AEMO half-hourly operational demand and rooftop PV forecasts
+against actuals. The frontend is a static Next.js export, but the target runtime
+is Cloudflare: Pages serves the app, a Worker provides the browser data API, R2
+stores payloads, and D1 stores catalog/availability metadata.
+
+GitHub remains source control and CI. It is not the long-term runtime data
+platform.
+
+## Architecture
+
+Target runtime flow:
+
+```text
+AEMO / NEMWEB / live sources
+        |
+        v
+source adapters and ingest jobs
+        |
+        v
+R2 payload objects + D1 catalog metadata
+        |
+        v
+Cloudflare Worker API
+        |
+        v
+Cloudflare Pages static frontend
+```
+
+The important boundary is the Worker API. The browser should consume documented
+API responses, not R2 object names, D1 rows, GitHub raw files, or source-specific
+CSV shapes.
+
+The current migration keeps compatibility JSON shapes working while the storage
+path is being proven:
+
+- `compat/day/<date>.json`, `compat/index.json`, `compat/latest.json`, and
+  `compat/live.json` live in R2.
+- D1 tracks source runs, datasets, day availability, analyses, and data quality.
+- The Worker exposes `/api/*` endpoints that mirror the existing frontend data
+  contracts where needed.
+- `public/data/` remains a compatibility output during transition, not the
+  target production data platform.
+
+See:
+
+- `docs/ARCHITECTURE.md`
+- `docs/DATA_CONTRACTS.md`
+- `docs/DECISIONS/0001-cloudflare-runtime.md`
+- `docs/DECISIONS/0002-storage-layout.md`
+- `docs/CLOUDFLARE_SETUP.md`
+
+## Repo Map
+
+- `app/` - Next.js app shell and page composition.
+- `components/` - chart and UI components.
+- `lib/` - frontend data clients, API/static switching, live-data client, CSV helpers.
+- `ingest/` - Python NEMWEB ingest and normalized day construction.
+- `scripts/` - operational helpers, including Cloudflare publish and live fetch.
+- `worker/` - Cloudflare Worker cron dispatcher and compatibility API.
+- `tests/` - Python ingest, live-data, analysis, and publish tests.
+- `public/data/` - generated compatibility payloads. Do not treat as hand-authored source.
+- `docs/` - architecture, contracts, decisions, and migration plans.
+
+## Data Model
+
+Keep these concepts separate:
+
+- Source: where data came from and how it was fetched or parsed.
+- Dataset: normalized time-series or reference data with stable semantics.
+- Analysis: derived output computed from one or more datasets.
+- Visualisation: frontend view that renders datasets or analysis payloads.
+
+Current normalized dataset families include:
+
+- `aemo-nemweb.demand.forecast`
+- `aemo-nemweb.demand.actual`
+- `aemo-nemweb.rooftopPv.forecast`
+- `aemo-nemweb.rooftopPv.actual`
+
+The day-ahead forecast cutoff is currently the latest run stamped at or before
+`D-1 17:00 AEST`. Do not change that semantic without updating
+`docs/DATA_CONTRACTS.md` and ingest tests in the same change.
 
 ## Frontend
 
-A [Next.js](https://nextjs.org) app (static export) rooted at the repo root,
-using TypeScript, React and [Recharts](https://recharts.org). The committed
-data in `public/data/` is served as-is and fetched at runtime, so newly
-ingested days appear without rebuilding the app.
+The app is a static Next.js export:
 
-### Local development
-
-```bash
+```sh
 npm install
-npm run dev      # http://localhost:3000
+npm run dev
+npm run build
 ```
 
-### Production build
+Build output goes to `out/`.
 
-```bash
-npm run build    # static export to out/ (gitignored)
+Data loading is controlled at build time:
+
+```sh
+# Transitional/static mode: reads /data/*.json from the static export.
+NEXT_PUBLIC_DATA_SOURCE=static npm run build
+
+# Cloudflare/API mode: reads the Worker API.
+NEXT_PUBLIC_DATA_SOURCE=api \
+NEXT_PUBLIC_API_BASE_URL=https://nemweb-live-pinger.nemwebber.workers.dev \
+npm run build
 ```
 
-The export is fully static — `output: 'export'` in `next.config.js` writes
-`out/`, and the data files under `public/data/` are copied into `out/data/`.
+The frontend imports from `lib/dataClient.ts`, which selects either the static
+compatibility files or the Worker API. New frontend code should use that client
+boundary rather than fetching storage paths directly.
 
-### Data loading
+## Worker API
 
-At runtime the app fetches from the data directory:
+The Worker exposes:
 
-- `data/index.json` — available days, ascending (`[{ "date": ... }]`)
-- `data/latest.json` — pointer to the most recent day (`{ "date", "path" }`)
-- `data/<date>.json` — per-day forecast/actual payload (48 half-hour intervals)
-- `data/today.json` — the in-progress trading day's forecast plume, actuals
-  empty (optional; present once the ingest has run with `--today`)
+- `GET /api/catalog`
+- `GET /api/days`
+- `GET /api/latest`
+- `GET /api/day/:date`
+- `GET /api/live`
+- `GET /api/analyses`
+- `GET /api/analyses/:id`
 
-Fetch paths are prefixed with `NEXT_PUBLIC_BASE_PATH` so the app works when
-deployed under a repository subpath (see below). The ingest pipeline in
-`ingest/` owns `public/data/` and is independent of the frontend.
+Run locally:
 
-### Live "today" overlay
-
-When `today.json` exists and today (AEST) is selected, the charts overlay
-**live actuals** on the forecast plumes, polled through the Cloudflare Worker
-proxy in `worker/` (which fronts the OpenElectricity API): demand as a dense
-5-minute line, rooftop PV as 30-minute step marks. Each chart shows a
-LIVE/STALE badge; polling pauses when the tab is hidden and resumes on focus.
-Past days are unaffected and never poll.
-
-Caveats:
-
-1. **Demand definition mismatch.** The Worker serves OpenElectricity's
-   `DISPATCHREGIONSUM.TOTALDEMAND` (dispatch-process demand). The forecast
-   plumes are calibrated to `DEMANDOPERATIONALACTUAL`, defined slightly
-   differently — so the live line sits close to, but not exactly on, the
-   half-hourly operational actuals.
-2. **Rooftop cadence is 30-minute.** Rooftop PV actuals are served at their
-   native AEMO ASEFS2 resolution (30 min), not OE's 5-minute gap-filled values.
-   The step marks reflect this underlying cadence.
-3. **Third-party dependency.** The live view depends on the OpenElectricity API
-   via the Worker. If OE is unavailable the view degrades to a STALE state
-   (last-known data); the historical view is unaffected.
-
-The Worker URL is a build-time constant (`NEXT_PUBLIC_WORKER_URL`, defaulting to
-the deployed proxy); see `worker/README.md`.
-
-### Deployment (GitHub Pages)
-
-`.github/workflows/deploy-pages.yml` builds and deploys `out/` to GitHub Pages
-on every push to `main` (and on manual dispatch). Project Pages serve under
-`/<repo>`, so the workflow sets:
-
-```
-NEXT_PUBLIC_BASE_PATH=/${{ github.event.repository.name }}
+```sh
+cd worker
+npm install
+npm run typecheck
+npm run dev
 ```
 
-which prefixes both the static assets and the runtime data fetches. To deploy,
-enable Pages with **Settings → Pages → Source: GitHub Actions**.
+Deployments use Wrangler and the bindings in `worker/wrangler.toml`.
 
-For a root deployment (custom domain or user/org Pages), leave
-`NEXT_PUBLIC_BASE_PATH` unset and the app uses root-relative paths.
+## Storage And Publish
+
+Generated compatibility payloads are published to Cloudflare with:
+
+```sh
+python3 scripts/publish_cloudflare.py \
+  --bucket nemweb-data-prod \
+  --database nemweb-catalog-prod
+```
+
+Live data can be published independently:
+
+```sh
+python3 scripts/publish_cloudflare.py \
+  --only-live \
+  --live today-live.json \
+  --bucket nemweb-data-prod
+```
+
+The publisher uploads R2 compatibility objects and updates D1 catalog rows. It
+publishes pointer objects last so clients do not see an index/latest entry before
+the referenced payload exists.
+
+## Deployment
+
+The desired deployed shape is:
+
+- Cloudflare Pages for the static frontend.
+- Cloudflare Worker for the browser API and scheduled live refresh dispatch.
+- R2 for raw, normalized, compatibility, live, and analysis payloads.
+- D1 for catalog, source runs, dataset availability, and analysis availability.
+
+Cloudflare Pages builds should use API mode:
+
+```sh
+NEXT_PUBLIC_DATA_SOURCE=api
+NEXT_PUBLIC_API_BASE_URL=<worker-url>
+```
+
+Branch previews should be deployed from the branch being validated, with the
+same API-mode environment, before cutting the architecture branch across to
+`main`.
+
+The legacy GitHub Pages/static-data path may remain during migration as a
+rollback route, but it should not be expanded as the production architecture.
+
+## Verification
+
+Useful checks:
+
+```sh
+npm run test
+env NEXT_PUBLIC_DATA_SOURCE=api \
+  NEXT_PUBLIC_API_BASE_URL=https://nemweb-live-pinger.nemwebber.workers.dev \
+  npm run build
+
+cd ingest
+uv run python -m pytest -q
+
+cd ../worker
+npm run typecheck
+npm run test
+```
+
+Operational smoke checks:
+
+```sh
+curl https://<worker-url>/api/latest
+curl https://<worker-url>/api/day/YYYY-MM-DD
+curl https://<worker-url>/api/live
+curl https://<worker-url>/api/catalog
+```
+
+## Migration Rule
+
+Do not couple visualisations to source-specific raw data or Cloudflare storage
+implementation details. Add or update contracts first, keep the current app
+stable, and move runtime data behind the Worker API incrementally.

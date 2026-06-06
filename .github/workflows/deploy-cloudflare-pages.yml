@@ -4,13 +4,14 @@ on:
   push:
     branches:
       - main
+      - architecture-docs
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: cloudflare-pages
+  group: cloudflare-pages-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -20,6 +21,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
       NEMWEB_API_BASE_URL: ${{ vars.NEMWEB_API_BASE_URL }}
+      NEMWEB_PREVIEW_API_BASE_URL: ${{ vars.NEMWEB_PREVIEW_API_BASE_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -32,16 +34,25 @@ jobs:
         run: npm ci
 
       - name: Build static export
-        env:
-          NEXT_PUBLIC_DATA_SOURCE: api
-          NEXT_PUBLIC_API_BASE_URL: ${{ env.NEMWEB_API_BASE_URL }}
-        run: npm run build
+        id: build
+        run: |
+          set -euo pipefail
+          api_base="${NEMWEB_API_BASE_URL:-}"
+          if [ "${GITHUB_REF_NAME}" = "architecture-docs" ]; then
+            api_base="${NEMWEB_PREVIEW_API_BASE_URL:-https://nemweb-live-pinger-preview.nemwebber.workers.dev}"
+          fi
+          if [ -z "$api_base" ]; then
+            echo "Cloudflare Pages build skipped: set NEMWEB_API_BASE_URL variable."
+            exit 0
+          fi
+          echo "api_base=$api_base" >> "$GITHUB_OUTPUT"
+          NEXT_PUBLIC_DATA_SOURCE=api NEXT_PUBLIC_API_BASE_URL="$api_base" npm run build
 
       - name: Deploy to Cloudflare Pages
         run: |
           set -euo pipefail
-          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_PAGES_PROJECT:-}" ] || [ -z "${NEMWEB_API_BASE_URL:-}" ]; then
-            echo "Cloudflare Pages deploy skipped: set CLOUDFLARE_API_TOKEN secret, CLOUDFLARE_PAGES_PROJECT variable, and NEMWEB_API_BASE_URL variable."
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_PAGES_PROJECT:-}" ] || [ -z "${{ steps.build.outputs.api_base }}" ]; then
+            echo "Cloudflare Pages deploy skipped: set CLOUDFLARE_API_TOKEN secret, CLOUDFLARE_PAGES_PROJECT variable, and API base URL variable."
             exit 0
           fi
-          npx wrangler pages deploy out --project-name "$CLOUDFLARE_PAGES_PROJECT" --branch main
+          npx wrangler pages deploy out --project-name "$CLOUDFLARE_PAGES_PROJECT" --branch "$GITHUB_REF_NAME"

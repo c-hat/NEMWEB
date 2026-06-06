@@ -26,6 +26,15 @@ describe('buildForecastChartData', () => {
     expect(liveRow?.band).toEqual([90, 130]);
   });
 
+  it('drops live rows outside the selected trading day', () => {
+    const rows = buildForecastChartData(fixtureMetric, [
+      { ts: '2026-05-29T00:30:00+10:00', value: 999 },
+    ]);
+
+    expect(rows.some((row) => row.live === 999)).toBe(false);
+    expect(rows.map((row) => row.t)).toEqual([30, 60, 90]);
+  });
+
   it('adds the current forecast line only after now', () => {
     const rows = buildForecastChartData(
       fixtureMetric,

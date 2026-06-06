@@ -14,6 +14,13 @@
 // fine-grained GitHub PAT scoped to c-hat/NEMWEB with Actions: Read and write.
 
 import {
+  freshestLive,
+  isJsonRecord,
+  mergedDayIndex,
+  mostCompleteDay,
+  newestLatest,
+} from "./compat";
+import {
   compatDayKey,
   compatIndexKey,
   compatLatestKey,
@@ -109,46 +116,21 @@ async function fetchFallbackJson<T>(url: string): Promise<T | null> {
   return res.json<T>();
 }
 
-async function compatJson<T>(
+async function compatSources(
   env: Env,
   key: string,
   fallbackPath: string,
-): Promise<T | null> {
-  if (env.NEMWEB_BUCKET) {
-    const fromR2 = await getJsonObject<T>(env as Env & StorageEnv, key);
-    if (fromR2 != null) return fromR2;
-  }
-  return fetchFallbackJson<T>(`${fallbackBase(env)}${fallbackPath}`);
+): Promise<{ r2Body: JsonValue | null; fallbackBody: JsonValue | null }> {
+  const r2Promise = env.NEMWEB_BUCKET
+    ? getJsonObject<JsonValue>(env as Env & StorageEnv, key)
+    : Promise.resolve(null);
+  const fallbackPromise = fetchFallbackJson<JsonValue>(`${fallbackBase(env)}${fallbackPath}`);
+  const [r2Body, fallbackBody] = await Promise.all([r2Promise, fallbackPromise]);
+  return { r2Body, fallbackBody };
 }
 
 function emptyCatalog(): Catalog {
   return { datasets: [], analyses: [], updatedAt: new Date().toISOString() };
-}
-
-function isJsonRecord(value: JsonValue): value is { [key: string]: JsonValue } {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function jsonString(value: JsonValue | undefined): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function timestampMs(value: JsonValue | null): number {
-  if (!value || !isJsonRecord(value)) return Number.NaN;
-  const updatedAt = jsonString(value.updatedAt);
-  return updatedAt ? Date.parse(updatedAt) : Number.NaN;
-}
-
-function freshestLive(r2Body: JsonValue | null, fallbackBody: JsonValue | null): JsonValue | null {
-  if (r2Body == null) return fallbackBody;
-  if (fallbackBody == null) return r2Body;
-
-  const r2Time = timestampMs(r2Body);
-  const fallbackTime = timestampMs(fallbackBody);
-  if (Number.isFinite(r2Time) && Number.isFinite(fallbackTime) && fallbackTime > r2Time) {
-    return fallbackBody;
-  }
-  return r2Body;
 }
 
 function canonicalAnalysisId(id: string): string {
@@ -189,14 +171,16 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
   }
 
   if (path === "/api/days") {
-    const body = await compatJson<JsonValue>(env, compatIndexKey(), "/data/index.json");
+    const { r2Body, fallbackBody } = await compatSources(env, compatIndexKey(), "/data/index.json");
+    const body = mergedDayIndex(r2Body, fallbackBody);
     return body == null
       ? errorResponse(env, 503, "Days index is unavailable")
       : jsonResponse(env, body, { cacheControl: "public, max-age=300" });
   }
 
   if (path === "/api/latest") {
-    const body = await compatJson<JsonValue>(env, compatLatestKey(), "/data/latest.json");
+    const { r2Body, fallbackBody } = await compatSources(env, compatLatestKey(), "/data/latest.json");
+    const body = newestLatest(r2Body, fallbackBody);
     return body == null
       ? errorResponse(env, 503, "Latest pointer is unavailable")
       : jsonResponse(env, body, { cacheControl: "public, max-age=300" });
@@ -205,7 +189,8 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
   const dayMatch = path.match(/^\/api\/day\/(\d{4}-\d{2}-\d{2})$/);
   if (dayMatch) {
     const date = dayMatch[1];
-    const body = await compatJson<JsonValue>(env, compatDayKey(date), `/data/${date}.json`);
+    const { r2Body, fallbackBody } = await compatSources(env, compatDayKey(date), `/data/${date}.json`);
+    const body = mostCompleteDay(r2Body, fallbackBody);
     return body == null
       ? errorResponse(env, 404, `No data for ${date}`)
       : jsonResponse(env, body, { cacheControl: "public, max-age=3600" });

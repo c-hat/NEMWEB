@@ -81,7 +81,7 @@ export function buildForecastChartData(
   if (liveActual) {
     for (const p of liveActual) {
       const t = minutesOf(p.ts);
-      if (t < 30) continue;
+      if (t < 30 || t > 1440) continue;
       row(t).live = p.value;
     }
   }

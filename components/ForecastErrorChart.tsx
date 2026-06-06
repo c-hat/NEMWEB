@@ -5,7 +5,6 @@ import {
   ComposedChart,
   Legend,
   Line,
-  ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -30,7 +29,7 @@ interface ForecastErrorChartProps {
 const SYNC_ID = 'nemweb-forecast';
 const HOUR_TICKS = [180, 360, 540, 720, 900, 1080, 1260, 1440];
 const GRID_COLOR = '#e3ddd0';
-const DEMAND_ERROR_COLOR = '#5b8a84';
+const DEMAND_ERROR_COLOR = '#6fa29a';
 const ROOFTOP_COLOR = '#d07a2d';
 
 const AXIS_TICK = {
@@ -109,8 +108,6 @@ export default function ForecastErrorChart({
             margin={{ top: 20, right: 16, bottom: 8, left: 8 }}
           >
             <CartesianGrid strokeDasharray="1 4" stroke={GRID_COLOR} vertical={false} />
-            <ReferenceArea y1={0} y2={domain[1]} fill="#c0552d" fillOpacity={0.035} />
-            <ReferenceArea y1={domain[0]} y2={0} fill="#4f8a69" fillOpacity={0.035} />
             <XAxis
               dataKey="t"
               type="number"

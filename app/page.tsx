@@ -19,7 +19,8 @@ import {
   type SelectableRegion,
 } from '@/lib/dataClient';
 import { useLiveData } from '@/lib/useLiveData';
-import type { CurrentForecast, ForecastSeries } from '@/lib/live';
+import { fetchLiveFile, type CurrentForecast, type ForecastSeries, type LiveFile } from '@/lib/live';
+import { buildLiveOnlyDayData, currentAestDate, liveTradingDate } from '@/lib/liveDay';
 
 /** Sum the 5 AEMO regions' POE50 forecast to produce a NEM aggregate series. */
 function sumNemForecast(cf: CurrentForecast): ForecastSeries | undefined {
@@ -54,6 +55,7 @@ export default function Home() {
   // ingest has produced it). Its trading date marks the "live" day.
   const [todayData, setTodayData] = useState<DayData | null>(null);
   const todayDate = todayData?.tradingDate ?? null;
+  const [initialLiveDate, setInitialLiveDate] = useState<string | null>(null);
 
   // Load the precomputed demand forecast-error rankings once (optional feature;
   // a failure just leaves the "Largest demand errors" menu empty).
@@ -75,21 +77,32 @@ export default function Home() {
     let cancelled = false;
     (async () => {
       try {
-        const [index, latest, today] = await Promise.all([
+        const [index, latest, today, initialLive] = await Promise.all([
           fetchIndex(),
           fetchLatest(),
           fetchToday().catch(() => null),
+          fetchLiveFile().catch(() => null as LiveFile | null),
         ]);
         if (cancelled) return;
+        const todayIso = currentAestDate();
+        const liveDate = liveTradingDate(initialLive);
+        const usableToday =
+          today && today.tradingDate === todayIso
+            ? today
+            : liveDate === todayIso
+              ? buildLiveOnlyDayData(liveDate)
+              : null;
         const ascending = index.map((e) => e.date);
-        if (today) {
+        if (usableToday) {
           // today.json isn't in the index; append it so it stays navigable
           // (otherwise picking "today" would snap to the latest dated day).
-          if (!ascending.includes(today.tradingDate)) ascending.push(today.tradingDate);
-          setTodayData(today);
+          if (!ascending.includes(usableToday.tradingDate)) ascending.push(usableToday.tradingDate);
+          setInitialLiveDate(liveDate);
+          setTodayData(usableToday);
           setDates(ascending);
-          setSelectedDate(today.tradingDate);
+          setSelectedDate(usableToday.tradingDate);
         } else {
+          setInitialLiveDate(liveDate);
           setDates(ascending);
           setSelectedDate(latest.date || ascending[ascending.length - 1] || '');
         }
@@ -169,9 +182,7 @@ export default function Home() {
   // Today usually has no data yet (the ingest lags a day). Extend the picker's
   // max to today so its native "Today" button is selectable; pickDate() then
   // snaps that choice to the most recent available day.
-  const todayISO = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Brisbane' }).format(
-    new Date(),
-  );
+  const todayISO = currentAestDate();
   const maxDate =
     dates.length && dates[dates.length - 1] > todayISO ? dates[dates.length - 1] : todayISO;
 
@@ -185,25 +196,27 @@ export default function Home() {
   // no-ops when inactive. Region switches read from the file with no refetch.
   const isLive = !!todayDate && selectedDate === todayDate && !!todayData;
   const live = useLiveData(isLive);
-  const liveRegion = live.file?.regions[region];
+  const activeLiveDate = liveTradingDate(live.file) ?? initialLiveDate;
+  const liveMatchesSelected = isLive && activeLiveDate === selectedDate;
+  const liveRegion = liveMatchesSelected ? live.file?.regions[region] : undefined;
 
   // Current NEMWEB forecast for the selected region — demand and rooftop
   // have separate issuedAt timestamps so we build them independently.
   const liveDemandForecast = useMemo(() => {
     const cf = live.file?.currentForecast?.demand;
-    if (!cf) return undefined;
+    if (!cf || !liveMatchesSelected) return undefined;
     const series = region === 'NEM' ? sumNemForecast(cf) : cf.regions[region];
     if (!series) return undefined;
     return { issuedAt: cf.issuedAt, ...series };
-  }, [live.file, region]);
+  }, [live.file, liveMatchesSelected, region]);
 
   const liveRooftopForecast = useMemo(() => {
     const cf = live.file?.currentForecast?.rooftopPv;
-    if (!cf) return undefined;
+    if (!cf || !liveMatchesSelected) return undefined;
     const series = region === 'NEM' ? sumNemForecast(cf) : cf.regions[region];
     if (!series) return undefined;
     return { issuedAt: cf.issuedAt, ...series };
-  }, [live.file, region]);
+  }, [live.file, liveMatchesSelected, region]);
 
   // Top demand-error days for the currently selected region.
   const rankingList = rankings?.regions[region] ?? [];
@@ -307,7 +320,7 @@ export default function Home() {
         </div>
       </section>
 
-      {day && (
+      {day && day.forecastIssuedAt && (
         <p className="context">
           <strong>Forecast issued:</strong> {formatIssued(day.forecastIssuedAt)}
         </p>
@@ -322,7 +335,7 @@ export default function Home() {
             title={`${REGION_LABELS[region]} — Demand`}
             unit="MW"
             metric={regionData.demand}
-            liveActual={isLive ? (liveRegion?.demand ?? []) : undefined}
+            liveActual={liveMatchesSelected ? (liveRegion?.demand ?? []) : undefined}
             live={isLive}
             stale={live.stale}
             lastUpdated={live.updatedAt}
@@ -332,7 +345,7 @@ export default function Home() {
             title={`${REGION_LABELS[region]} — Rooftop PV`}
             unit="MW"
             metric={regionData.rooftopPv}
-            liveActual={isLive ? (liveRegion?.rooftopPv ?? []) : undefined}
+            liveActual={liveMatchesSelected ? (liveRegion?.rooftopPv ?? []) : undefined}
             live={isLive}
             stale={live.stale}
             lastUpdated={live.updatedAt}
@@ -342,7 +355,7 @@ export default function Home() {
           <ForecastErrorChart
             regions={day.regions}
             region={region}
-            liveRegions={isLive ? (live.file?.regions ?? {}) : undefined}
+            liveRegions={liveMatchesSelected ? (live.file?.regions ?? {}) : undefined}
           />
           {region === 'NEM' && (
             <p className="caveat">
