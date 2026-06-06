@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  dayTradingDate,
   freshestLive,
   mergedDayIndex,
   mostCompleteDay,
@@ -9,18 +10,19 @@ import {
 } from "./compat";
 import type { JsonValue } from "./storage";
 
-function dayPayload(date: string, actual: number | null): JsonValue {
-  const values = [actual, actual, actual];
+function dayPayload(date: string, actual: number | null, forecast: number | null = null): JsonValue {
+  const actuals = [actual, actual, actual];
+  const forecasts = [forecast, forecast, forecast];
   return {
     tradingDate: date,
     regions: {
       NSW1: {
-        demand: { actual: values },
-        rooftopPv: { actual: values },
+        demand: { actual: actuals, poe10: forecasts, poe50: forecasts, poe90: forecasts },
+        rooftopPv: { actual: actuals, poe10: forecasts, poe50: forecasts, poe90: forecasts },
       },
       VIC1: {
-        demand: { actual: values },
-        rooftopPv: { actual: values },
+        demand: { actual: actuals, poe10: forecasts, poe50: forecasts, poe90: forecasts },
+        rooftopPv: { actual: actuals, poe10: forecasts, poe50: forecasts, poe90: forecasts },
       },
     },
   };
@@ -55,6 +57,19 @@ test("mostCompleteDay keeps R2 when it is at least as complete as fallback", () 
   const fallback = dayPayload("2026-06-05", null);
 
   assert.equal(mostCompleteDay(r2, fallback), r2);
+});
+
+test("mostCompleteDay uses forecast completeness to break actual-count ties", () => {
+  const r2 = dayPayload("2026-06-06", null);
+  const fallback = dayPayload("2026-06-06", null, 100);
+
+  assert.equal(mostCompleteDay(r2, fallback), fallback);
+});
+
+test("dayTradingDate returns the day payload trading date only when valid", () => {
+  assert.equal(dayTradingDate(dayPayload("2026-06-06", null)), "2026-06-06");
+  assert.equal(dayTradingDate({ tradingDate: "06-06-2026" }), null);
+  assert.equal(dayTradingDate(null), null);
 });
 
 test("freshestLive keeps using the most recent updatedAt timestamp", () => {

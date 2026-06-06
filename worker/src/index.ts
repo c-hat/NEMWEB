@@ -14,6 +14,7 @@
 // fine-grained GitHub PAT scoped to c-hat/NEMWEB with Actions: Read and write.
 
 import {
+  dayTradingDate,
   freshestLive,
   isJsonRecord,
   mergedDayIndex,
@@ -25,6 +26,7 @@ import {
   compatIndexKey,
   compatLatestKey,
   compatLiveKey,
+  compatTodayKey,
   analysisKey,
   getCatalog,
   getJsonObject,
@@ -59,6 +61,12 @@ const LEGACY_DEMAND_ERROR_ANALYSIS_ID = "demand-error-ranking";
 
 function aestHour(now: Date): number {
   return (now.getUTCHours() + AEST_OFFSET_HOURS) % 24;
+}
+
+function aestDate(now = new Date()): string {
+  return new Date(now.getTime() + AEST_OFFSET_HOURS * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
 }
 
 async function dispatch(token: string): Promise<Response> {
@@ -129,6 +137,10 @@ async function compatSources(
   return { r2Body, fallbackBody };
 }
 
+function sameTradingDate(body: JsonValue | null, date: string): JsonValue | null {
+  return dayTradingDate(body) === date ? body : null;
+}
+
 function emptyCatalog(): Catalog {
   return { datasets: [], analyses: [], updatedAt: new Date().toISOString() };
 }
@@ -190,7 +202,19 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
   if (dayMatch) {
     const date = dayMatch[1];
     const { r2Body, fallbackBody } = await compatSources(env, compatDayKey(date), `/data/${date}.json`);
-    const body = mostCompleteDay(r2Body, fallbackBody);
+    let body = mostCompleteDay(r2Body, fallbackBody);
+    if (date === aestDate()) {
+      const { r2Body: todayR2Body, fallbackBody: todayFallbackBody } = await compatSources(
+        env,
+        compatTodayKey(),
+        "/data/today.json",
+      );
+      const todayBody = mostCompleteDay(
+        sameTradingDate(todayR2Body, date),
+        sameTradingDate(todayFallbackBody, date),
+      );
+      body = mostCompleteDay(body, todayBody);
+    }
     return body == null
       ? errorResponse(env, 404, `No data for ${date}`)
       : jsonResponse(env, body, { cacheControl: "public, max-age=3600" });

@@ -216,6 +216,11 @@ Future response may replace `path` with API links after frontend migration.
 Returns the per-day forecast/actual payload. The initial API can mirror
 `data/YYYY-MM-DD.json`.
 
+For the current AEST trading date, the compatibility API may satisfy this route
+from `data/today.json` / `compat/today.json` while the settled dated payload is
+not yet available. The returned payload must still have `tradingDate` equal to
+the requested `:date`.
+
 Future versions may include:
 
 - dataset IDs

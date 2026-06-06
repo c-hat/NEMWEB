@@ -127,6 +127,10 @@ export function compatDayKey(date: string): string {
   return `compat/day/${date}.json`;
 }
 
+export function compatTodayKey(): string {
+  return 'compat/today.json';
+}
+
 export function compatIndexKey(): string {
   return 'compat/index.json';
 }

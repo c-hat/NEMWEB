@@ -31,6 +31,10 @@ function dateString(value: JsonValue | undefined): string | null {
   return date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
 }
 
+export function dayTradingDate(value: JsonValue | null): string | null {
+  return isJsonRecord(value) ? dateString(value.tradingDate) : null;
+}
+
 export function newestLatest(
   r2Body: JsonValue | null,
   fallbackBody: JsonValue | null,
@@ -92,6 +96,25 @@ function countActualValues(value: JsonValue | null): number {
   return count;
 }
 
+function countForecastValues(value: JsonValue | null): number {
+  if (!isJsonRecord(value) || !isJsonRecord(value.regions)) return 0;
+
+  let count = 0;
+  for (const region of Object.values(value.regions)) {
+    if (!isJsonRecord(region)) continue;
+    for (const metric of ["demand", "rooftopPv"]) {
+      const block = region[metric];
+      if (!isJsonRecord(block)) continue;
+      for (const series of ["poe10", "poe50", "poe90"]) {
+        const values = block[series];
+        if (!Array.isArray(values)) continue;
+        count += values.filter((point) => typeof point === "number" && Number.isFinite(point)).length;
+      }
+    }
+  }
+  return count;
+}
+
 export function mostCompleteDay(
   r2Body: JsonValue | null,
   fallbackBody: JsonValue | null,
@@ -103,6 +126,13 @@ export function mostCompleteDay(
   const fallbackActuals = countActualValues(fallbackBody);
   if (fallbackActuals > r2Actuals) {
     return fallbackBody;
+  }
+  if (fallbackActuals === r2Actuals) {
+    const r2Forecasts = countForecastValues(r2Body);
+    const fallbackForecasts = countForecastValues(fallbackBody);
+    if (fallbackForecasts > r2Forecasts) {
+      return fallbackBody;
+    }
   }
   return r2Body;
 }
