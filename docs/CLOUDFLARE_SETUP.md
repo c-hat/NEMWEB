@@ -351,6 +351,15 @@ python3 scripts/publish_cloudflare.py \
   --database nemweb-catalog-prod
 ```
 
+If the deploy token can write R2 but cannot write D1 yet, publish R2
+compatibility objects without catalog writes:
+
+```sh
+python3 scripts/publish_cloudflare.py \
+  --bucket nemweb-data-prod \
+  --skip-d1
+```
+
 Live-data publish:
 
 ```sh
@@ -375,6 +384,15 @@ The historical publisher:
 The scheduled `ingest` workflow publishes historical/static data after
 generating `public/data`. The `live-data` workflow publishes `today-live.json`
 to `compat/live.json` after each live refresh.
+
+D1 catalog publishing from CI is gated behind:
+
+```text
+NEMWEB_PUBLISH_D1=true
+```
+
+Leave it unset until `CLOUDFLARE_API_TOKEN` has D1 query/write permission.
+R2 compatibility publishing still runs without it.
 
 Cloudflare Pages now builds in API mode:
 

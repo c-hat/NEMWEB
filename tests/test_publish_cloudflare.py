@@ -88,3 +88,9 @@ def test_only_live_plan_uploads_no_d1_sql(tmp_path):
 
     assert [(upload.source, upload.key) for upload in plan.uploads] == [(live, "compat/live.json")]
     assert plan.sql == ""
+
+
+def test_skip_d1_parse_arg():
+    args = pc.parse_args(["--skip-d1"])
+
+    assert args.skip_d1 is True

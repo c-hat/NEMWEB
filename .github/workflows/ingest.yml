@@ -109,11 +109,22 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           NEMWEB_D1_DATABASE_NAME: ${{ vars.NEMWEB_D1_DATABASE_NAME }}
+          NEMWEB_PUBLISH_D1: ${{ vars.NEMWEB_PUBLISH_D1 }}
           NEMWEB_R2_BUCKET: ${{ vars.NEMWEB_R2_BUCKET }}
         run: |
           set -euo pipefail
-          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${NEMWEB_D1_DATABASE_NAME:-}" ] || [ -z "${NEMWEB_R2_BUCKET:-}" ]; then
-            echo "Cloudflare publish skipped: set CLOUDFLARE_API_TOKEN secret, NEMWEB_D1_DATABASE_NAME variable, and NEMWEB_R2_BUCKET variable."
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${NEMWEB_R2_BUCKET:-}" ]; then
+            echo "Cloudflare publish skipped: set CLOUDFLARE_API_TOKEN secret and NEMWEB_R2_BUCKET variable."
             exit 0
           fi
-          python3 scripts/publish_cloudflare.py --database "$NEMWEB_D1_DATABASE_NAME" --bucket "$NEMWEB_R2_BUCKET"
+          publish_args=(--bucket "$NEMWEB_R2_BUCKET")
+          if [ "${NEMWEB_PUBLISH_D1:-}" = "true" ]; then
+            if [ -z "${NEMWEB_D1_DATABASE_NAME:-}" ]; then
+              echo "Cloudflare D1 publish requested but NEMWEB_D1_DATABASE_NAME is not set."
+              exit 1
+            fi
+            publish_args+=(--database "$NEMWEB_D1_DATABASE_NAME")
+          else
+            publish_args+=(--skip-d1)
+          fi
+          python3 scripts/publish_cloudflare.py "${publish_args[@]}"

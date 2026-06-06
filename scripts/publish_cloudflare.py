@@ -443,6 +443,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--worker-dir", type=Path, default=DEFAULT_WORKER_DIR)
     parser.add_argument("--live", type=Path, help="Upload a live-data JSON file to compat/live.json")
     parser.add_argument("--only-live", action="store_true", help="Only publish --live to R2")
+    parser.add_argument("--skip-d1", action="store_true", help="Upload R2 objects but skip D1 catalog writes")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
@@ -464,7 +465,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         wrangler = wrangler_command(worker_dir)
         publish_uploads(wrangler, worker_dir, args.bucket, plan.uploads, args.concurrency, args.dry_run)
-        publish_sql(wrangler, worker_dir, args.database, plan.sql, args.dry_run)
+        if args.skip_d1:
+            print("D1 publish skipped")
+        else:
+            publish_sql(wrangler, worker_dir, args.database, plan.sql, args.dry_run)
 
     print("publish complete")
     return 0
