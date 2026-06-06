@@ -51,18 +51,30 @@ function latestLiveValueAtOrBefore(points: LivePoint[] | undefined, intervalMs: 
   return bestTs === -Infinity ? null : bestValue;
 }
 
-function liveRegionValueAtOrBefore(
+function exactLiveValueAt(points: LivePoint[] | undefined, intervalMs: number): number | null {
+  if (!points || points.length === 0) return null;
+  for (const point of points) {
+    if (Date.parse(point.ts) === intervalMs) return point.value;
+  }
+  return null;
+}
+
+function liveRegionValueForInterval(
   liveRegions: Record<string, LiveRegion> | undefined,
   region: SelectableRegion,
   metric: keyof LiveRegion,
   intervalMs: number,
 ): number | null {
   if (!liveRegions) return null;
-  if (region !== 'NEM') return latestLiveValueAtOrBefore(liveRegions[region]?.[metric], intervalMs);
+  const valueAt =
+    metric === 'rooftopPv'
+      ? exactLiveValueAt
+      : latestLiveValueAtOrBefore;
+  if (region !== 'NEM') return valueAt(liveRegions[region]?.[metric], intervalMs);
 
   let total = 0;
   for (const code of REGIONS) {
-    const value = latestLiveValueAtOrBefore(liveRegions[code]?.[metric], intervalMs);
+    const value = valueAt(liveRegions[code]?.[metric], intervalMs);
     if (value == null) return null;
     total += value;
   }
@@ -78,7 +90,7 @@ function actualAt(
   liveMetric: keyof LiveRegion,
 ): number | null {
   if (!liveRegions) return metricActual[index] ?? null;
-  return liveRegionValueAtOrBefore(liveRegions, region, liveMetric, Date.parse(intervalIso));
+  return liveRegionValueForInterval(liveRegions, region, liveMetric, Date.parse(intervalIso));
 }
 
 function intervalExplainedPct(demandError: number, residual: number): number | null {

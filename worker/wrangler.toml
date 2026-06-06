@@ -50,6 +50,7 @@ migrations_dir = "migrations"
 DATA_FALLBACK_BASE_URL = "https://raw.githubusercontent.com/c-hat/NEMWEB/main/public"
 LIVE_DATA_URL = "https://raw.githubusercontent.com/c-hat/NEMWEB/live-data/today-live.json"
 ALLOWED_ORIGIN = "*"
+WORKFLOW_REF = "architecture-docs"
 
 # GH_DISPATCH_TOKEN is a SECRET (a fine-grained GitHub PAT with Actions: Read
 # and write on c-hat/NEMWEB) and must NOT live here. Set it once on the Worker:

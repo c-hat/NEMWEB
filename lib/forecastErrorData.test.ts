@@ -109,7 +109,7 @@ describe('buildForecastErrorData', () => {
     expect(result.points.map((point) => point.rooftopExplainedPct)).toEqual([null, null, null]);
   });
 
-  it('aligns live actuals to the latest point at or before each interval end', () => {
+  it('aligns 5-minute demand actuals to the latest point at or before each interval end', () => {
     const liveRegions: Record<string, LiveRegion> = {
       NSW1: {
         demand: [
@@ -118,8 +118,8 @@ describe('buildForecastErrorData', () => {
           { ts: '2026-05-28T00:55:00+10:00', value: 118 },
         ],
         rooftopPv: [
-          { ts: '2026-05-28T00:20:00+10:00', value: 38 },
-          { ts: '2026-05-28T00:59:00+10:00', value: 45 },
+          { ts: '2026-05-28T00:30:00+10:00', value: 38 },
+          { ts: '2026-05-28T01:00:00+10:00', value: 45 },
         ],
       },
     };
@@ -134,5 +134,27 @@ describe('buildForecastErrorData', () => {
       ['00:30', 11, 2],
       ['01:00', 8, 5],
     ]);
+  });
+
+  it('does not carry a half-hour rooftop actual into the next forecast-error interval', () => {
+    const liveRegions: Record<string, LiveRegion> = {
+      NSW1: {
+        demand: [
+          { ts: '2026-05-28T00:29:00+10:00', value: 111 },
+          { ts: '2026-05-28T00:59:00+10:00', value: 118 },
+        ],
+        rooftopPv: [
+          { ts: '2026-05-28T00:30:00+10:00', value: 38 },
+        ],
+      },
+    };
+
+    const result = buildForecastErrorData({
+      regions: regionsWith(() => regionData()),
+      region: 'NSW1',
+      liveRegions,
+    });
+
+    expect(result.points.map((point) => point.time)).toEqual(['00:30']);
   });
 });

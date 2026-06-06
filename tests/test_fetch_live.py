@@ -134,9 +134,9 @@ def test_want_rooftop_gate():
     assert fl._want_rooftop(0, False) is True
     assert fl._want_rooftop(5, False) is True
     assert fl._want_rooftop(35, False) is True
-    assert fl._want_rooftop(15, False) is False
-    assert fl._want_rooftop(45, False) is False
-    assert fl._want_rooftop(15, True) is True  # forced overrides the gate
+    assert fl._want_rooftop(15, False) is True
+    assert fl._want_rooftop(45, False) is True
+    assert fl._want_rooftop(15, True) is True
 
 
 def _run_all() -> int:

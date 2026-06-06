@@ -8,7 +8,8 @@ name: live-data
 # Data sources per run:
 #   - Demand actuals: OpenElectricity API (OE_API_KEY secret) — every run.
 #   - Rooftop actuals + demand/rooftop forecasts: NEMWEB (unauthenticated) —
-#     fetched when minute-of-hour ∈ {0-9, 30-39}; carried forward otherwise.
+#     fetched on every run so newly published rooftop intervals are picked up
+#     at the next 10-minute dispatch.
 #
 # Triggered by workflow_dispatch ONLY. A small Cloudflare Worker cron (worker/)
 # calls this endpoint every ~10 min during the AEST active window.
@@ -33,10 +34,10 @@ jobs:
   live:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
+      - name: Checkout workflow ref
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref_name }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5

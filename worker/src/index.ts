@@ -37,6 +37,7 @@ import {
 
 export interface Env {
   GH_DISPATCH_TOKEN: string;
+  WORKFLOW_REF?: string;
   NEMWEB_BUCKET?: R2Bucket;
   NEMWEB_DB?: D1Database;
   DATA_FALLBACK_BASE_URL?: string;
@@ -47,7 +48,7 @@ export interface Env {
 const OWNER = "c-hat";
 const REPO = "NEMWEB";
 const WORKFLOW = "live-data.yml";
-const REF = "main";
+const DEFAULT_WORKFLOW_REF = "main";
 
 // AEST = UTC+10 (no DST). Dispatch only during AEST 06:00-23:59 so the live view
 // refreshes through the day and goes quiet (STALE) overnight. The cron fires
@@ -69,7 +70,7 @@ function aestDate(now = new Date()): string {
     .slice(0, 10);
 }
 
-async function dispatch(token: string): Promise<Response> {
+async function dispatch(token: string, ref = DEFAULT_WORKFLOW_REF): Promise<Response> {
   const url = `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/${WORKFLOW}/dispatches`;
   return fetch(url, {
     method: "POST",
@@ -80,7 +81,7 @@ async function dispatch(token: string): Promise<Response> {
       "User-Agent": "nemweb-live-pinger",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ ref: REF }),
+    body: JSON.stringify({ ref }),
   });
 }
 
@@ -282,9 +283,10 @@ export default {
       console.error("pinger: GH_DISPATCH_TOKEN secret is not set; cannot dispatch");
       return;
     }
-    const res = await dispatch(env.GH_DISPATCH_TOKEN);
+    const ref = env.WORKFLOW_REF || DEFAULT_WORKFLOW_REF;
+    const res = await dispatch(env.GH_DISPATCH_TOKEN, ref);
     if (res.status === 204) {
-      console.log(`pinger: dispatched ${WORKFLOW} (AEST hour ${h}) -> 204`);
+      console.log(`pinger: dispatched ${WORKFLOW}@${ref} (AEST hour ${h}) -> 204`);
     } else {
       // GitHub returns 404 if the token lacks Actions:write, 401 if invalid.
       const body = await res.text().catch(() => "");
