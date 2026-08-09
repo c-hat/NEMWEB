@@ -122,9 +122,35 @@ The operational forecaster products follow the same split:
 - Visualisation: the live briefing, ramp chart, area table, DUID movers and
   network detail consume only those browser contracts.
 
+## Meteorological Decision-Support Hierarchy
+
+The live operational workspace is organized by usefulness to meteorological
+forecasters, not by source-report availability:
+
+1. Solar signal: rooftop PV estimates/forecasts by load area plus aggregated
+   utility-scale solar SCADA.
+2. Residual demand: operational demand less utility-scale solar, connecting the
+   solar signal to the grid requirement remaining for other generation.
+3. Other weather-sensitive generation: aggregated wind SCADA/UIGF and large
+   renewable-unit movements.
+4. System consequence: reserve/LOR, followed by constraint violations.
+5. System response detail: binding constraints and interconnector flows.
+
+Binding constraints and interconnector flows are not meteorological evidence by
+themselves. They remain available as a collapsed response layer and are not
+promoted into the change briefing unless a constraint has a violation. SCADA
+movements are observations only; weather, dispatch or outage causes are not
+inferred without supporting inputs.
+
+The established forecast tracker remains the default tab. The live
+meteorological workspace loads independently on a second tab, preserving both
+the familiar workflow and its failure boundary.
+
 Operational demand is grid-supplied demand and is already net of rooftop PV.
 The application calculates underlying demand as operational demand plus the
 co-timed rooftop PV estimate; it never subtracts rooftop PV a second time.
+Residual demand for this product is operational demand less utility-scale solar
+SCADA/UIGF. This is distinct from both operational and underlying demand.
 
 ## Incremental Migration Path
 

@@ -46,6 +46,7 @@ function sumNemForecast(cf: CurrentForecast): ForecastSeries | undefined {
 }
 
 export default function Home() {
+  const [activeView, setActiveView] = useState<'forecast' | 'meteorology'>('forecast');
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [region, setRegion] = useState<SelectableRegion>('NEM');
@@ -198,10 +199,14 @@ export default function Home() {
   // no-ops when inactive. Region switches read from the file with no refetch.
   const isLive = !!todayDate && selectedDate === todayDate && !!todayData;
   const live = useLiveData(isLive);
-  const systemContext = useSystemContext(isLive);
+  const systemContext = useSystemContext(isLive && activeView === 'meteorology');
   const activeLiveDate = liveTradingDate(live.file) ?? initialLiveDate;
   const liveMatchesSelected = isLive && activeLiveDate === selectedDate;
   const liveRegion = liveMatchesSelected ? live.file?.regions[region] : undefined;
+
+  useEffect(() => {
+    if (!isLive && activeView === 'meteorology') setActiveView('forecast');
+  }, [activeView, isLive]);
 
   // Current NEMWEB forecast for the selected region — demand and rooftop
   // have separate issuedAt timestamps so we build them independently.
@@ -238,6 +243,49 @@ export default function Home() {
           Half-hourly demand &amp; rooftop PV forecasts (POE bands) vs actuals
         </p>
       </header>
+
+      <nav className="workspace-tabs" role="tablist" aria-label="Workspace view">
+        <button
+          type="button"
+          role="tab"
+          id="forecast-tab"
+          aria-selected={activeView === 'forecast'}
+          aria-controls="forecast-panel"
+          className={activeView === 'forecast' ? 'active' : ''}
+          tabIndex={activeView === 'forecast' ? 0 : -1}
+          onClick={() => setActiveView('forecast')}
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowRight' && isLive) {
+              event.preventDefault();
+              setActiveView('meteorology');
+              requestAnimationFrame(() => document.getElementById('meteorology-tab')?.focus());
+            }
+          }}
+        >
+          Forecast tracker
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="meteorology-tab"
+          aria-selected={activeView === 'meteorology'}
+          aria-controls="meteorology-panel"
+          className={activeView === 'meteorology' ? 'active' : ''}
+          tabIndex={activeView === 'meteorology' ? 0 : -1}
+          onClick={() => setActiveView('meteorology')}
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowLeft') {
+              event.preventDefault();
+              setActiveView('forecast');
+              requestAnimationFrame(() => document.getElementById('forecast-tab')?.focus());
+            }
+          }}
+          disabled={!isLive}
+          title={isLive ? 'Open live solar and residual-demand context' : 'Meteorological context is available for the live trading day'}
+        >
+          Meteorological context <span>Live</span>
+        </button>
+      </nav>
 
       <section className="controls">
         <div className="control-group">
@@ -289,7 +337,7 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="control-group errors-control">
+        {activeView === 'forecast' && <div className="control-group errors-control">
           <label htmlFor="errors-select">Largest demand errors</label>
           <select
             id="errors-select"
@@ -307,9 +355,9 @@ export default function Home() {
               </option>
             ))}
           </select>
-        </div>
+        </div>}
 
-        <div className="control-group download-control">
+        {activeView === 'forecast' && <div className="control-group download-control">
           <label>&nbsp;</label>
           <button
             type="button"
@@ -320,10 +368,10 @@ export default function Home() {
           >
             ↓ Download CSV
           </button>
-        </div>
+        </div>}
       </section>
 
-      {day && day.forecastIssuedAt && (
+      {activeView === 'forecast' && day && day.forecastIssuedAt && (
         <p className="context">
           <strong>Forecast issued:</strong> {formatIssued(day.forecastIssuedAt)}
         </p>
@@ -332,19 +380,23 @@ export default function Home() {
       {error && <p className="error">Error loading data: {error}</p>}
       {loading && !error && <p className="status">Loading…</p>}
 
-      {!loading && !error && isLive && systemContext.context && (
-        <SystemContextPanel
-          context={systemContext.context}
-          briefing={systemContext.briefing}
-          region={region}
-          demandActual={liveMatchesSelected ? (liveRegion?.demand ?? []) : []}
-          demandForecast={liveDemandForecast}
-          stale={systemContext.stale}
-        />
+      {!loading && !error && activeView === 'meteorology' && (
+        <section id="meteorology-panel" role="tabpanel" aria-labelledby="meteorology-tab">
+          {systemContext.context ? (
+            <SystemContextPanel
+              context={systemContext.context}
+              briefing={systemContext.briefing}
+              region={region}
+              stale={systemContext.stale}
+            />
+          ) : (
+            <p className="status">Loading live meteorological context…</p>
+          )}
+        </section>
       )}
 
-      {!loading && !error && day && regionData && (
-        <section className="charts">
+      {!loading && !error && activeView === 'forecast' && day && regionData && (
+        <section className="charts" id="forecast-panel" role="tabpanel" aria-labelledby="forecast-tab">
           <ForecastChart
             title={`${REGION_LABELS[region]} — Demand`}
             unit="MW"

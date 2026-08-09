@@ -71,6 +71,7 @@ from urllib3.util.retry import Retry
 try:
     from forecaster_context import (
         build_briefing,
+        build_meteorological_context,
         build_region_metrics,
         merge_area_actuals,
         parse_dispatch_context,
@@ -83,6 +84,7 @@ try:
 except ModuleNotFoundError:  # importlib-based tests load the script outside scripts/
     from scripts.forecaster_context import (
         build_briefing,
+        build_meteorological_context,
         build_region_metrics,
         merge_area_actuals,
         parse_dispatch_context,
@@ -926,8 +928,17 @@ def main(argv: list[str]) -> int:
 
         live_demand = {region: values["demand"] for region, values in payload["regions"].items()}
         live_rooftop = {region: values["rooftopPv"] for region, values in payload["regions"].items()}
+        meteorological_context = build_meteorological_context(
+            live_demand,
+            live_rooftop,
+            duid_scada,
+            current_forecast or {},
+            reserve_context,
+            previous_context,
+            today,
+        )
         system_context = {
-            "schemaVersion": "1.0.0",
+            "schemaVersion": "1.1.0",
             "updatedAt": updated_at,
             "tradingDate": today,
             "sources": sources,
@@ -941,6 +952,7 @@ def main(argv: list[str]) -> int:
             "duidScada": duid_scada,
             "dispatch": dispatch_context,
             "reserve": reserve_context,
+            "meteorologicalContext": meteorological_context,
             "quality": {"status": "partial" if context_errors else "complete", "errors": context_errors},
         }
         briefing = build_briefing(system_context, previous_context)

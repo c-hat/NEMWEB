@@ -396,44 +396,294 @@ def build_region_metrics(
     return regions
 
 
+def _asset_aggregate(
+    assets: list[dict[str, Any]], fueltech: str, region: str
+) -> tuple[float | None, float | None]:
+    scoped_assets = [
+        asset for asset in assets if region == "NEM" or asset.get("region") == region
+    ]
+    selected = [
+        asset
+        for asset in scoped_assets
+        if asset.get("fueltech") == fueltech
+    ]
+    if not selected and scoped_assets:
+        return 0.0, 0.0
+    current = [asset.get("currentMw") for asset in selected if isinstance(asset.get("currentMw"), (int, float))]
+    deltas = [asset.get("deltaMw") for asset in selected if isinstance(asset.get("deltaMw"), (int, float))]
+    return (
+        round(sum(current), 1) if current else None,
+        round(sum(deltas), 1) if deltas else None,
+    )
+
+
+def _merge_current_series(
+    previous_context: dict[str, Any] | None,
+    region: str,
+    section: str,
+    trading_date: str,
+    observed_at: str | None,
+    value: float | None,
+) -> list[dict[str, Any]]:
+    previous = (
+        ((((previous_context or {}).get("meteorologicalContext") or {}).get("regions") or {}).get(region) or {}).get(section) or {}
+    ).get("series") or []
+    by_ts = {
+        point.get("ts"): point
+        for point in previous
+        if isinstance(point, dict)
+        and str(point.get("ts", ""))[:10] == trading_date
+        and isinstance(point.get("value"), (int, float))
+    }
+    if observed_at and value is not None:
+        by_ts[observed_at] = {"ts": observed_at, "value": value}
+    return [by_ts[key] for key in sorted(by_ts) if key]
+
+
+def _point_at_or_before(
+    points: list[dict[str, Any]], target: datetime, max_age_minutes: int
+) -> dict[str, Any] | None:
+    chosen: dict[str, Any] | None = None
+    chosen_dt: datetime | None = None
+    for point in points:
+        try:
+            point_dt = datetime.fromisoformat(str(point.get("ts")))
+        except (TypeError, ValueError):
+            continue
+        if point_dt > target:
+            break
+        if isinstance(point.get("value"), (int, float)):
+            chosen = point
+            chosen_dt = point_dt
+    if chosen_dt is None or target - chosen_dt > timedelta(minutes=max_age_minutes):
+        return None
+    return chosen
+
+
+def _forecast_values(current_forecast: dict[str, Any], metric: str, region: str) -> dict[str, float]:
+    regions = ((current_forecast.get(metric) or {}).get("regions") or {})
+    if region != "NEM":
+        series = regions.get(region) or {}
+        return {
+            ts: float(value)
+            for ts, value in zip(series.get("intervals") or [], series.get("poe50") or [])
+            if isinstance(value, (int, float))
+        }
+    regional_maps = []
+    for region_id in REGIONS:
+        series = regions.get(region_id) or {}
+        regional_maps.append(
+            {
+                ts: float(value)
+                for ts, value in zip(series.get("intervals") or [], series.get("poe50") or [])
+                if isinstance(value, (int, float))
+            }
+        )
+    common = set.intersection(*(set(values) for values in regional_maps)) if regional_maps else set()
+    return {ts: round(sum(values[ts] for values in regional_maps), 1) for ts in common}
+
+
+def _reserve_values(reserve: dict[str, Any], region: str) -> dict[str, dict[str, float]]:
+    regions = reserve.get("regions") or {}
+    if region != "NEM":
+        return {
+            item["ts"]: {
+                key: float(item[key])
+                for key in ("solarUigfMw", "windUigfMw", "demandPoe50Mw")
+                if isinstance(item.get(key), (int, float))
+            }
+            for item in ((regions.get(region) or {}).get("intervals") or [])
+            if item.get("ts")
+        }
+    regional_maps = [_reserve_values(reserve, region_id) for region_id in REGIONS]
+    common = set.intersection(*(set(values) for values in regional_maps)) if regional_maps else set()
+    result: dict[str, dict[str, float]] = {}
+    for ts in common:
+        fields: dict[str, float] = {}
+        for key in ("solarUigfMw", "windUigfMw", "demandPoe50Mw"):
+            values = [regional[ts].get(key) for regional in regional_maps]
+            if all(isinstance(value, (int, float)) for value in values):
+                fields[key] = round(sum(values), 1)
+        result[ts] = fields
+    return result
+
+
+def build_meteorological_context(
+    demand: dict[str, list[dict[str, Any]]],
+    rooftop: dict[str, list[dict[str, Any]]],
+    duid_scada: dict[str, Any],
+    current_forecast: dict[str, Any],
+    reserve: dict[str, Any],
+    previous_context: dict[str, Any] | None,
+    trading_date: str,
+) -> dict[str, Any]:
+    """Build solar, wind and residual-demand products from normalized inputs."""
+    assets = duid_scada.get("assets") or []
+    observed_at = duid_scada.get("observedAt")
+    result: dict[str, Any] = {}
+    for region in [*REGIONS, "NEM"]:
+        rooftop_points = rooftop.get(region, [])
+        demand_points = demand.get(region, [])
+        rooftop_at, rooftop_mw = latest_value(rooftop_points)
+        demand_at, demand_mw = latest_value(demand_points)
+        utility_mw, utility_delta = _asset_aggregate(assets, "solar_utility", region)
+        wind_mw, wind_delta = _asset_aggregate(assets, "wind", region)
+        utility_series = _merge_current_series(
+            previous_context, region, "utilitySolar", trading_date, observed_at, utility_mw
+        )
+        wind_series = _merge_current_series(
+            previous_context, region, "wind", trading_date, observed_at, wind_mw
+        )
+
+        solar_series: list[dict[str, Any]] = []
+        residual_series: list[dict[str, Any]] = []
+        for utility_point in utility_series:
+            target = datetime.fromisoformat(utility_point["ts"])
+            # CURRENT rooftop estimates can publish close to one interval late;
+            # keep the component timestamp visible and allow one interval plus
+            # publication lag when building the combined operational series.
+            rooftop_point = _point_at_or_before(rooftop_points, target, 70)
+            demand_point = _point_at_or_before(demand_points, target, 15)
+            if rooftop_point:
+                solar_series.append(
+                    {
+                        "ts": utility_point["ts"],
+                        "rooftopPvMw": round(float(rooftop_point["value"]), 1),
+                        "utilitySolarMw": utility_point["value"],
+                        "totalSolarMw": round(float(rooftop_point["value"]) + utility_point["value"], 1),
+                    }
+                )
+            if demand_point:
+                residual_series.append(
+                    {
+                        "ts": utility_point["ts"],
+                        "operationalDemandMw": round(float(demand_point["value"]), 1),
+                        "utilitySolarMw": utility_point["value"],
+                        "residualDemandMw": round(float(demand_point["value"]) - utility_point["value"], 1),
+                    }
+                )
+
+        demand_forecast = _forecast_values(current_forecast, "demand", region)
+        rooftop_forecast = _forecast_values(current_forecast, "rooftopPv", region)
+        reserve_forecast = _reserve_values(reserve, region)
+        forecast: list[dict[str, Any]] = []
+        for ts in sorted(set(demand_forecast) & set(reserve_forecast)):
+            reserve_point = reserve_forecast[ts]
+            utility_forecast = reserve_point.get("solarUigfMw")
+            demand_value = demand_forecast.get(ts)
+            rooftop_value = rooftop_forecast.get(ts)
+            if utility_forecast is None or demand_value is None:
+                continue
+            forecast.append(
+                {
+                    "ts": ts,
+                    "rooftopPvMw": rooftop_value,
+                    "utilitySolarUigfMw": utility_forecast,
+                    "totalSolarMw": round(rooftop_value + utility_forecast, 1) if rooftop_value is not None else None,
+                    "operationalDemandMw": demand_value,
+                    "residualDemandMw": round(demand_value - utility_forecast, 1),
+                    "windUigfMw": reserve_point.get("windUigfMw"),
+                }
+            )
+
+        solar_ramp_points = [
+            {"ts": point["ts"], "value": point["totalSolarMw"]} for point in solar_series
+        ]
+        residual_ramp_points = [
+            {"ts": point["ts"], "value": point["residualDemandMw"]} for point in residual_series
+        ]
+        total_solar = (
+            round(rooftop_mw + utility_mw, 1)
+            if rooftop_mw is not None and utility_mw is not None
+            else None
+        )
+        residual_demand = (
+            round(demand_mw - utility_mw, 1)
+            if demand_mw is not None and utility_mw is not None
+            else None
+        )
+        result[region] = {
+            "solar": {
+                "rooftopPvMw": round(rooftop_mw, 1) if rooftop_mw is not None else None,
+                "rooftopObservedAt": rooftop_at,
+                "utilityScaleMw": utility_mw,
+                "utilityObservedAt": observed_at,
+                "utilityDeltaMw": utility_delta,
+                "totalEstimateMw": total_solar,
+                "rampsMw": {"30m": ramp(solar_ramp_points, 30), "60m": ramp(solar_ramp_points, 60)},
+                "series": solar_series,
+            },
+            "residualDemand": {
+                "currentMw": residual_demand,
+                "observedAt": demand_at,
+                "rampsMw": {"30m": ramp(residual_ramp_points, 30), "60m": ramp(residual_ramp_points, 60)},
+                "series": residual_series,
+            },
+            "utilitySolar": {
+                "currentMw": utility_mw,
+                "deltaMw": utility_delta,
+                "observedAt": observed_at,
+                "series": utility_series,
+            },
+            "wind": {
+                "currentMw": wind_mw,
+                "deltaMw": wind_delta,
+                "observedAt": observed_at,
+                "rampsMw": {"30m": ramp(wind_series, 30), "60m": ramp(wind_series, 60)},
+                "series": wind_series,
+            },
+            "forecast": forecast,
+        }
+    return {
+        "definition": "solar generation and demand remaining after utility-scale solar",
+        "regions": result,
+    }
+
+
 def _forecast_revision_events(context: dict[str, Any], previous: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not previous:
         return []
     events: list[dict[str, Any]] = []
-    current_forecast = context.get("currentForecast") or {}
-    previous_forecast = previous.get("currentForecast") or {}
-    for metric in ("demand", "rooftopPv"):
-        current_regions = (current_forecast.get(metric) or {}).get("regions") or {}
-        previous_regions = (previous_forecast.get(metric) or {}).get("regions") or {}
-        for region in REGIONS:
-            current_series = current_regions.get(region) or {}
-            previous_series = previous_regions.get(region) or {}
-            prior = dict(zip(previous_series.get("intervals") or [], previous_series.get("poe50") or []))
+    current_regions = ((context.get("meteorologicalContext") or {}).get("regions") or {})
+    previous_regions = ((previous.get("meteorologicalContext") or {}).get("regions") or {})
+    definitions = (
+        ("totalSolarMw", "solar-forecast-revision", "total solar", 100, 300),
+        ("residualDemandMw", "residual-demand-forecast-revision", "residual demand", 200, 500),
+    )
+    for region, current in current_regions.items():
+        previous_region = previous_regions.get(region) or {}
+        prior_points = {
+            point.get("ts"): point
+            for point in previous_region.get("forecast") or []
+            if isinstance(point, dict) and point.get("ts")
+        }
+        for field, event_type, label, region_threshold, nem_threshold in definitions:
             deltas = []
-            for ts, value in zip(current_series.get("intervals") or [], current_series.get("poe50") or []):
-                old = prior.get(ts)
+            for point in current.get("forecast") or []:
+                ts = point.get("ts")
+                value = point.get(field)
+                old = (prior_points.get(ts) or {}).get(field)
                 if isinstance(value, (int, float)) and isinstance(old, (int, float)):
                     deltas.append((ts, round(value - old, 1)))
             if not deltas:
                 continue
             peak_ts, peak_delta = max(deltas, key=lambda item: abs(item[1]))
-            threshold = 200 if metric == "demand" else 100
+            threshold = nem_threshold if region == "NEM" else region_threshold
             if abs(peak_delta) < threshold:
                 continue
-            label = "demand" if metric == "demand" else "rooftop PV"
             direction = "higher" if peak_delta > 0 else "lower"
             events.append(
                 {
-                    "id": f"forecast-revision:{metric}:{region}:{peak_ts}",
-                    "type": "forecast-revision",
+                    "id": f"{event_type}:{region}:{peak_ts}",
+                    "type": event_type,
                     "status": "active",
                     "severity": "watch",
                     "scope": {"kind": "region", "id": region},
                     "observedAt": context.get("updatedAt"),
                     "headline": f"{region} {label} forecast revised {direction} by {abs(peak_delta):,.0f} MW",
-                    "detail": f"Largest common-interval POE50 change is at {peak_ts[11:16]} AEST.",
-                    "metrics": {"metric": metric, "deltaMw": peak_delta, "interval": peak_ts},
-                    "evidence": [metric + "-current-forecast"],
+                    "detail": f"Largest common-interval change is at {peak_ts[11:16]} AEST.",
+                    "metrics": {"deltaMw": peak_delta, "interval": peak_ts},
+                    "evidence": ["aemo-demand-rooftop-pdpasa-forecasts"],
                     "confidence": "high",
                 }
             )
@@ -445,17 +695,26 @@ def _is_material_change(event: dict[str, Any], previous: dict[str, Any] | None) 
     if not previous:
         return False
     event_type = event.get("type")
-    if event_type in ("forecast-revision", "duid-movement"):
+    if event_type in (
+        "solar-forecast-revision",
+        "residual-demand-forecast-revision",
+        "renewable-unit-movement",
+    ):
         return True
 
     scope_id = (event.get("scope") or {}).get("id")
     metrics = event.get("metrics") or {}
-    if event_type == "demand-ramp":
+    ramp_sections = {
+        "solar-ramp": ("solar", 200 if scope_id == "NEM" else 75),
+        "residual-demand-ramp": ("residualDemand", 500 if scope_id == "NEM" else 200),
+        "wind-ramp": ("wind", 300 if scope_id == "NEM" else 100),
+    }
+    if event_type in ramp_sections:
+        section, threshold = ramp_sections[event_type]
         prior = (
-            ((((previous.get("regions") or {}).get(scope_id) or {}).get("operationalDemand") or {}).get("rampsMw") or {}).get("30m")
+            (((((previous.get("meteorologicalContext") or {}).get("regions") or {}).get(scope_id) or {}).get(section) or {}).get("rampsMw") or {}).get("30m")
         )
         current = metrics.get("rampMw")
-        threshold = 500 if scope_id == "NEM" else 200
         return (
             not isinstance(prior, (int, float))
             or not isinstance(current, (int, float))
@@ -476,7 +735,7 @@ def _is_material_change(event: dict[str, Any], previous: dict[str, Any] | None) 
             or abs(current_reserve - prior_reserve) >= 200
         )
 
-    if event_type == "binding-constraint":
+    if event_type == "constraint-violation":
         prior_constraints = {
             item.get("constraintId"): item
             for item in ((previous.get("dispatch") or {}).get("bindingConstraints") or [])
@@ -497,23 +756,45 @@ def build_briefing(context: dict[str, Any], previous: dict[str, Any] | None) -> 
     events = _forecast_revision_events(context, previous)
     updated_at = context.get("updatedAt")
 
-    for region, metrics in (context.get("regions") or {}).items():
-        ramp_30 = ((metrics.get("operationalDemand") or {}).get("rampsMw") or {}).get("30m")
-        threshold = 800 if region == "NEM" else 300
-        if isinstance(ramp_30, (int, float)) and abs(ramp_30) >= threshold:
+    meteorological_regions = ((context.get("meteorologicalContext") or {}).get("regions") or {})
+    ramp_definitions = (
+        ("solar", "solar-ramp", "total solar generation", 100, 300),
+        ("residualDemand", "residual-demand-ramp", "residual demand", 300, 800),
+        ("wind", "wind-ramp", "wind generation", 150, 400),
+    )
+    for region, metrics in meteorological_regions.items():
+        for section, event_type, label, region_threshold, nem_threshold in ramp_definitions:
+            ramp_30 = ((metrics.get(section) or {}).get("rampsMw") or {}).get("30m")
+            threshold = nem_threshold if region == "NEM" else region_threshold
+            if not isinstance(ramp_30, (int, float)) or abs(ramp_30) < threshold:
+                continue
             direction = "up" if ramp_30 > 0 else "down"
+            detail = (
+                "Estimated from rooftop PV and utility-scale solar observations."
+                if event_type == "solar-ramp"
+                else "Residual demand is operational demand less utility-scale solar."
+                if event_type == "residual-demand-ramp"
+                else "Regional wind SCADA movement; meteorological cause is not inferred."
+            )
+            evidence = (
+                ["aemo-rooftop-pv", "aemo-dispatch-unit-scada"]
+                if event_type == "solar-ramp"
+                else ["live-operational-demand", "aemo-dispatch-unit-scada"]
+                if event_type == "residual-demand-ramp"
+                else ["aemo-dispatch-unit-scada"]
+            )
             events.append(
                 {
-                    "id": f"demand-ramp:{region}:{updated_at}",
-                    "type": "demand-ramp",
+                    "id": f"{event_type}:{region}:{updated_at}",
+                    "type": event_type,
                     "status": "active",
                     "severity": "watch",
                     "scope": {"kind": "region", "id": region},
                     "observedAt": updated_at,
-                    "headline": f"{region} operational demand ramped {direction} {abs(ramp_30):,.0f} MW in 30 minutes",
-                    "detail": "Operational demand is the grid-supplied demand already net of rooftop PV.",
+                    "headline": f"{region} {label} moved {direction} {abs(ramp_30):,.0f} MW in 30 minutes",
+                    "detail": detail,
                     "metrics": {"rampMw": ramp_30, "windowMinutes": 30},
-                    "evidence": ["live-operational-demand"],
+                    "evidence": evidence,
                     "confidence": "high",
                 }
             )
@@ -538,16 +819,21 @@ def build_briefing(context: dict[str, Any], previous: dict[str, Any] | None) -> 
                 }
             )
 
-    for constraint in ((context.get("dispatch") or {}).get("bindingConstraints") or [])[:5]:
+    violated_constraints = [
+        constraint
+        for constraint in ((context.get("dispatch") or {}).get("bindingConstraints") or [])
+        if (constraint.get("violationDegree") or 0) > 0
+    ]
+    for constraint in violated_constraints[:5]:
         events.append(
             {
-                "id": f"binding-constraint:{constraint.get('constraintId')}:{updated_at}",
-                "type": "binding-constraint",
+                "id": f"constraint-violation:{constraint.get('constraintId')}:{updated_at}",
+                "type": "constraint-violation",
                 "status": "active",
-                "severity": "warning" if (constraint.get("violationDegree") or 0) > 0 else "info",
+                "severity": "warning",
                 "scope": {"kind": "constraint", "id": constraint.get("constraintId")},
                 "observedAt": updated_at,
-                "headline": f"Constraint {constraint.get('constraintId')} is binding",
+                "headline": f"Constraint {constraint.get('constraintId')} has a dispatch violation",
                 "detail": f"Marginal value {constraint.get('marginalValue') or 0:,.2f}; violation {constraint.get('violationDegree') or 0:,.2f}.",
                 "metrics": constraint,
                 "evidence": ["aemo-dispatchis"],
@@ -561,17 +847,18 @@ def build_briefing(context: dict[str, Any], previous: dict[str, Any] | None) -> 
         if asset.get("fueltech") in ("wind", "solar_utility") and isinstance(asset.get("deltaMw"), (int, float))
     ]
     vre_movers.sort(key=lambda asset: abs(asset["deltaMw"]), reverse=True)
-    for asset in [asset for asset in vre_movers if abs(asset["deltaMw"]) >= 40][:3]:
+    for asset in [asset for asset in vre_movers if abs(asset["deltaMw"]) >= 80][:5]:
         direction = "increased" if asset["deltaMw"] > 0 else "decreased"
+        label = "solar" if asset.get("fueltech") == "solar_utility" else "wind"
         events.append(
             {
-                "id": f"duid-movement:{asset['duid']}:{updated_at}",
-                "type": "duid-movement",
+                "id": f"renewable-unit-movement:{asset['duid']}:{updated_at}",
+                "type": "renewable-unit-movement",
                 "status": "active",
                 "severity": "info",
                 "scope": {"kind": "duid", "id": asset["duid"], "region": asset.get("region")},
                 "observedAt": asset.get("observedAt"),
-                "headline": f"{asset['duid']} output {direction} {abs(asset['deltaMw']):,.0f} MW",
+                "headline": f"{asset['duid']} {label} output {direction} {abs(asset['deltaMw']):,.0f} MW",
                 "detail": "SCADA movement since the previous live-data run; cause is not inferred.",
                 "metrics": {"deltaMw": asset["deltaMw"], "currentMw": asset["currentMw"], "fueltech": asset.get("fueltech")},
                 "evidence": ["aemo-dispatch-unit-scada"],
@@ -580,7 +867,22 @@ def build_briefing(context: dict[str, Any], previous: dict[str, Any] | None) -> 
         )
 
     severity_order = {"critical": 0, "warning": 1, "watch": 2, "info": 3}
-    events.sort(key=lambda event: severity_order.get(event["severity"], 9))
+    type_order = {
+        "solar-ramp": 0,
+        "solar-forecast-revision": 1,
+        "residual-demand-ramp": 2,
+        "residual-demand-forecast-revision": 3,
+        "wind-ramp": 4,
+        "reserve-risk": 5,
+        "constraint-violation": 6,
+        "renewable-unit-movement": 7,
+    }
+    events.sort(
+        key=lambda event: (
+            severity_order.get(event["severity"], 9),
+            type_order.get(event["type"], 9),
+        )
+    )
     material_events = [event for event in events if _is_material_change(event, previous)]
     changes = [
         {
@@ -592,13 +894,13 @@ def build_briefing(context: dict[str, Any], previous: dict[str, Any] | None) -> 
         for event in material_events[:8]
     ]
     if not previous:
-        summary = f"Comparison baseline established; {len(events)} active system item{'s' if len(events) != 1 else ''}."
+        summary = f"Comparison baseline established; {len(events)} active meteorological or system-consequence item{'s' if len(events) != 1 else ''}."
     elif changes:
-        summary = f"{len(material_events)} material change{'s' if len(material_events) != 1 else ''} since the previous live-data run; {len(changes)} shown."
+        summary = f"{len(material_events)} material solar, wind, residual-demand or system-consequence change{'s' if len(material_events) != 1 else ''} since the previous run; {len(changes)} shown."
     else:
-        summary = "No material changes crossed the first-release thresholds since the previous live-data run."
+        summary = "No material meteorological or system-consequence changes crossed the first-release thresholds since the previous run."
     return {
-        "schemaVersion": "1.0.0",
+        "schemaVersion": "1.1.0",
         "generatedAt": updated_at,
         "comparedWith": (previous or {}).get("updatedAt"),
         "summary": summary,

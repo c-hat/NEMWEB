@@ -251,6 +251,8 @@ Returns a bounded current-state product with `schemaVersion`, `updatedAt`,
 - `dispatch`: regional dispatch context, binding constraints and
   interconnectors.
 - `reserve`: 24-hour PDPASA surplus-reserve and LOR context.
+- `meteorologicalContext`: solar, wind, residual-demand and forecast products
+  derived from the normalized sections above.
 - `quality`: `complete` or `partial`, with per-source errors. Partial context
   does not make `/api/live` unavailable.
 
@@ -262,6 +264,13 @@ Semantic rules:
   before the stated lookback.
 - `deltaMw` on a DUID is SCADA output movement since the previous live run. It
   is not a curtailment, trip or weather-cause diagnosis.
+- Estimated total solar is the latest rooftop PV estimate plus aggregated
+  utility-scale solar DUID SCADA. Component observation times remain explicit
+  because the rooftop and SCADA cadences differ.
+- Residual demand is operational demand less utility-scale solar. Its forecast
+  uses operational-demand POE50 less regional PDPASA solar UIGF.
+- `solar UIGF - cleared MW` is a dispatch gap. It must not be labelled
+  curtailment without additional unit dispatch-cap evidence.
 - Fixed AEST timestamps use an explicit `+10:00` offset.
 
 ### `GET /api/briefing`
@@ -279,9 +288,11 @@ Each event contains:
 - typed values under `metrics`.
 - `evidence` source IDs and a `confidence` label.
 
-Initial event types are `forecast-revision`, `demand-ramp`, `reserve-risk`,
-`binding-constraint`, and `duid-movement`. Thresholds are analysis policy and
-must be fixture-tested when changed.
+Current event types are `solar-ramp`, `solar-forecast-revision`,
+`residual-demand-ramp`, `residual-demand-forecast-revision`, `wind-ramp`,
+`renewable-unit-movement`, `reserve-risk`, and `constraint-violation`.
+Ordinary binding constraints are deliberately excluded from the briefing.
+Thresholds are analysis policy and must be fixture-tested when changed.
 
 ### `GET /api/events`
 
