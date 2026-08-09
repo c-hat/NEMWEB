@@ -115,21 +115,87 @@ def test_reserve_ramps_and_run_to_run_briefing():
             {"ts": "2026-08-09T12:00:00+10:00", "value": 5400},
         ]
     }
-    metrics = fc.build_region_metrics(demand, {})
+    rooftop = {
+        "VIC1": [
+            {"ts": "2026-08-09T11:30:00+10:00", "value": 1000},
+            {"ts": "2026-08-09T12:00:00+10:00", "value": 800},
+        ]
+    }
+    previous = {
+        "updatedAt": "2026-08-09T01:50:00Z",
+        "meteorologicalContext": {
+            "regions": {
+                "VIC1": {
+                    "utilitySolar": {
+                        "series": [{"ts": "2026-08-09T11:30:00+10:00", "value": 500}]
+                    },
+                    "wind": {"series": []},
+                }
+            }
+        },
+    }
+    current_forecast = {
+        "demand": {
+            "regions": {
+                "VIC1": {
+                    "intervals": ["2026-08-09T14:00:00+10:00"],
+                    "poe50": [6000],
+                }
+            }
+        },
+        "rooftopPv": {
+            "regions": {
+                "VIC1": {
+                    "intervals": ["2026-08-09T14:00:00+10:00"],
+                    "poe50": [400],
+                }
+            }
+        },
+    }
+    meteorology = fc.build_meteorological_context(
+        demand,
+        rooftop,
+        {
+            "observedAt": "2026-08-09T12:00:00+10:00",
+            "assets": [
+                {
+                    "duid": "SOLAR1",
+                    "region": "VIC1",
+                    "fueltech": "solar_utility",
+                    "currentMw": 600,
+                    "deltaMw": 100,
+                }
+            ],
+        },
+        current_forecast,
+        reserve,
+        previous,
+        "2026-08-09",
+    )
+    vic = meteorology["regions"]["VIC1"]
+    assert vic["solar"]["totalEstimateMw"] == 1400
+    assert vic["solar"]["rampsMw"]["30m"] == -100
+    assert vic["residualDemand"]["currentMw"] == 4800
+    assert vic["residualDemand"]["rampsMw"]["30m"] == 300
+    assert vic["forecast"][0]["totalSolarMw"] == 900
+    assert vic["forecast"][0]["residualDemandMw"] == 5500
+
     context = {
         "updatedAt": "2026-08-09T02:00:00Z",
-        "regions": metrics,
-        "currentForecast": {},
+        "regions": fc.build_region_metrics(demand, rooftop),
+        "currentForecast": current_forecast,
+        "meteorologicalContext": meteorology,
         "reserve": reserve,
         "dispatch": {"bindingConstraints": []},
         "duidScada": {"assets": []},
     }
-    briefing = fc.build_briefing(context, {"updatedAt": "2026-08-09T01:50:00Z"})
+    briefing = fc.build_briefing(context, previous)
     types = {event["type"] for event in briefing["events"]}
-    assert "demand-ramp" in types
+    assert "solar-ramp" in types
+    assert "residual-demand-ramp" in types
     assert "reserve-risk" in types
     assert briefing["comparedWith"] == "2026-08-09T01:50:00Z"
-    assert len(briefing["changes"]) == 2
+    assert len(briefing["changes"]) == 3
 
 
 def test_first_briefing_establishes_baseline_without_claiming_changes():
@@ -146,6 +212,6 @@ def test_first_briefing_establishes_baseline_without_claiming_changes():
         "duidScada": {"assets": []},
     }
     briefing = fc.build_briefing(context, None)
-    assert len(briefing["events"]) == 1
+    assert briefing["events"] == []
     assert briefing["changes"] == []
     assert briefing["summary"].startswith("Comparison baseline established")

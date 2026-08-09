@@ -1,6 +1,6 @@
 import { getForecasterBriefing, getSystemContext } from './api';
 import { USE_API_DATA } from './dataSource';
-import type { CurrentForecast, ForecastSeries, LivePoint } from './live';
+import type { CurrentForecast, LivePoint } from './live';
 
 const RAW_BASE =
   process.env.NEXT_PUBLIC_LIVE_CONTEXT_BASE_URL ||
@@ -82,6 +82,59 @@ export interface ReserveRegion {
   }>;
 }
 
+export interface MeteorologicalForecastPoint {
+  ts: string;
+  rooftopPvMw: number | null;
+  utilitySolarUigfMw: number;
+  totalSolarMw: number | null;
+  operationalDemandMw: number;
+  residualDemandMw: number;
+  windUigfMw: number | null;
+}
+
+export interface MeteorologicalRegion {
+  solar: {
+    rooftopPvMw: number | null;
+    rooftopObservedAt: string | null;
+    utilityScaleMw: number | null;
+    utilityObservedAt: string | null;
+    utilityDeltaMw: number | null;
+    totalEstimateMw: number | null;
+    rampsMw: { '30m': number | null; '60m': number | null };
+    series: Array<{
+      ts: string;
+      rooftopPvMw: number;
+      utilitySolarMw: number;
+      totalSolarMw: number;
+    }>;
+  };
+  residualDemand: {
+    currentMw: number | null;
+    observedAt: string | null;
+    rampsMw: { '30m': number | null; '60m': number | null };
+    series: Array<{
+      ts: string;
+      operationalDemandMw: number;
+      utilitySolarMw: number;
+      residualDemandMw: number;
+    }>;
+  };
+  utilitySolar: {
+    currentMw: number | null;
+    deltaMw: number | null;
+    observedAt: string | null;
+    series: LivePoint[];
+  };
+  wind: {
+    currentMw: number | null;
+    deltaMw: number | null;
+    observedAt: string | null;
+    rampsMw: { '30m': number | null; '60m': number | null };
+    series: LivePoint[];
+  };
+  forecast: MeteorologicalForecastPoint[];
+}
+
 export interface SystemContext {
   schemaVersion: string;
   updatedAt: string;
@@ -102,6 +155,10 @@ export interface SystemContext {
     interconnectors: InterconnectorContext[];
   };
   reserve: { runAt: string | null; horizonHours: number; regions: Record<string, ReserveRegion> };
+  meteorologicalContext: {
+    definition: string;
+    regions: Record<string, MeteorologicalRegion>;
+  };
   quality: { status: 'complete' | 'partial'; errors: Array<{ source: string; message: string }> };
 }
 
@@ -156,65 +213,4 @@ export async function fetchForecasterBriefing(): Promise<ForecasterBriefing> {
     }
   }
   return rawJson<ForecasterBriefing>('forecaster-briefing.json');
-}
-
-export interface DemandRampPoint {
-  ts: string;
-  minute: number;
-  time: string;
-  observedRampMw: number | null;
-  forecastRampMw: number | null;
-}
-
-/** Build rolling changes in grid-supplied demand, which is already net of rooftop PV. */
-export function buildDemandRamps(
-  actual: LivePoint[],
-  forecast?: ForecastSeries,
-  windowMinutes = 30,
-): DemandRampPoint[] {
-  const values = new Map<string, DemandRampPoint>();
-  const firstTs = actual[0]?.ts ?? forecast?.intervals[0];
-  if (!firstTs) return [];
-  const dayStartMs = Date.parse(firstTs.slice(0, 10) + 'T00:00:00+10:00');
-  const minuteOf = (ts: string) => Math.round((Date.parse(ts) - dayStartMs) / 60_000);
-  const row = (ts: string) => {
-    let item = values.get(ts);
-    if (!item) {
-      const minute = minuteOf(ts);
-      item = {
-        ts,
-        minute,
-        time: `${String(Math.floor(minute / 60) % 24).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`,
-        observedRampMw: null,
-        forecastRampMw: null,
-      };
-      values.set(ts, item);
-    }
-    return item;
-  };
-
-  let prior = 0;
-  for (let i = 0; i < actual.length; i++) {
-    const point = actual[i];
-    if (point.value == null) continue;
-    const target = Date.parse(point.ts) - windowMinutes * 60_000;
-    while (prior + 1 < i && Date.parse(actual[prior + 1].ts) <= target) prior++;
-    const previous = actual[prior];
-    if (previous?.value != null && Date.parse(previous.ts) <= target) {
-      row(point.ts).observedRampMw = Math.round((point.value - previous.value) * 10) / 10;
-    }
-  }
-
-  if (forecast) {
-    const priorForecast = new Map<number, number>();
-    forecast.intervals.forEach((ts, index) => {
-      const value = forecast.poe50[index];
-      if (value == null) return;
-      const minute = minuteOf(ts);
-      const old = priorForecast.get(minute - windowMinutes);
-      if (old != null) row(ts).forecastRampMw = Math.round((value - old) * 10) / 10;
-      priorForecast.set(minute, value);
-    });
-  }
-  return [...values.values()].sort((a, b) => a.minute - b.minute);
 }

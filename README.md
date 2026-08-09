@@ -8,6 +8,18 @@ stores payloads, and D1 stores catalog/availability metadata.
 GitHub remains source control and CI. It is not the long-term runtime data
 platform.
 
+The default `Forecast tracker` tab preserves the established day/region charts.
+For the live trading day, a separate `Meteorological context` tab leads with:
+
+- rooftop and utility-scale solar, combined solar and solar ramps
+- residual demand after utility-scale solar
+- rooftop-PV load-area forecasts and quality
+- aggregated wind and renewable DUID SCADA movements
+- reserve/LOR and network response as secondary context
+
+SCADA movement is never presented as proof of a weather cause, curtailment or
+unit outage.
+
 ## Architecture
 
 Target runtime flow:
@@ -49,6 +61,7 @@ See:
 - `docs/DATA_CONTRACTS.md`
 - `docs/DECISIONS/0001-cloudflare-runtime.md`
 - `docs/DECISIONS/0002-storage-layout.md`
+- `docs/DECISIONS/0005-solar-first-meteorological-workspace.md`
 - `docs/CLOUDFLARE_SETUP.md`
 
 ## Repo Map

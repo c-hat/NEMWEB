@@ -4,6 +4,8 @@ test('renders the forecast tracker from the configured data source', async ({ pa
   await page.goto('/');
 
   await expect(page.getByRole('heading', { name: 'NEMWEB Forecast Tracker' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Forecast tracker' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: /Meteorological context/i })).toHaveAttribute('aria-selected', 'false');
   await expect(page.locator('#date-select')).toHaveValue(/\d{4}-\d{2}-\d{2}/);
   await expect(page.getByRole('region', { name: /NEM — Demand forecast chart/i })).toBeVisible();
   await expect(page.getByRole('region', { name: /NEM — Rooftop PV forecast chart/i })).toBeVisible();
