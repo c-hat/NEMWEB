@@ -15,14 +15,13 @@ refresh. A `workflow_dispatch`, by contrast, starts within **~20 s**. So every
 (Worker → GitHub API), so — unlike the old data-proxy this replaced — it is
 never hit by the browser and a corporate firewall is irrelevant.
 
-The live data itself is still produced by the workflow (`scripts/fetch_live.py`)
-and force-pushed to the `live-data` branch. During migration, `/api/live` hides
-that fallback location from the browser and will read R2 `compat/live.json` once
-storage is provisioned.
+The workflow (`scripts/fetch_live.py`) publishes the stable live payload plus
+separate system-context and briefing products to R2. The `live-data` branch is
+retained as a migration fallback rather than the primary browser boundary.
 
 ## How it works
 
-- Cron trigger `*/10 * * * *` (UTC) — see `[triggers]` in `wrangler.toml`.
+- Cron trigger `*/10 * * * *` (UTC) — see `triggers` in `wrangler.jsonc`.
 - The handler gates to the **AEST active window (06:00–23:59)**; outside it the
   invocation no-ops (free), so the live view goes STALE overnight by design.
 - On each active tick it `POST`s
@@ -45,6 +44,10 @@ Endpoints:
 - `GET /api/latest`
 - `GET /api/day/:date`
 - `GET /api/live`
+- `GET /api/system-context`
+- `GET /api/briefing`
+- `GET /api/events`
+- `GET /api/status`
 - `GET /api/catalog`
 - `GET /api/analyses`
 - `GET /api/analyses/:id`
@@ -53,8 +56,8 @@ Current behavior:
 
 - If R2/D1 bindings are present, compatibility payloads are read from R2
   `compat/*`, and catalog responses come from D1 via `src/storage.ts`.
-- Until bindings are provisioned, `/api/days`, `/api/latest`, `/api/day/:date`,
-  and `/api/live` fall back to the current GitHub-hosted compatibility files.
+- The compatibility endpoints and live operational products choose the freshest
+  of R2 and their GitHub-hosted fallback during the migration.
 - `/api/catalog` and `/api/analyses` return empty compatible responses without
   D1. `/api/analyses/:id` returns a JSON 404 until analysis storage exists.
 
@@ -114,6 +117,9 @@ API smoke checks:
 curl https://<worker-host>/api/days
 curl https://<worker-host>/api/latest
 curl https://<worker-host>/api/catalog
+curl https://<worker-host>/api/status
+curl https://<worker-host>/api/system-context
+curl https://<worker-host>/api/briefing
 ```
 
 ## Local dev

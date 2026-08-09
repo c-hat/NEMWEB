@@ -95,6 +95,10 @@ Target endpoints:
 - `GET /api/latest`
 - `GET /api/day/:date`
 - `GET /api/live`
+- `GET /api/system-context`
+- `GET /api/briefing`
+- `GET /api/events`
+- `GET /api/status`
 - `GET /api/analyses`
 - `GET /api/analyses/:id`
 

@@ -1,5 +1,6 @@
 import type { DayData, IndexEntry, LatestEntry, Rankings } from './data';
 import type { LiveFile } from './live';
+import type { ForecasterBriefing, SystemContext } from './systemContext';
 
 export interface CatalogDatasetDescriptor {
   id: string;
@@ -71,6 +72,16 @@ export function getDay(date: string): Promise<DayData> {
 export function getLive(cacheBust = false): Promise<LiveFile> {
   const suffix = cacheBust ? `?t=${Date.now()}` : '';
   return fetchApiJson<LiveFile>(`/api/live${suffix}`);
+}
+
+export function getSystemContext(cacheBust = false): Promise<SystemContext> {
+  const suffix = cacheBust ? `?t=${Date.now()}` : '';
+  return fetchApiJson<SystemContext>(`/api/system-context${suffix}`);
+}
+
+export function getForecasterBriefing(cacheBust = false): Promise<ForecasterBriefing> {
+  const suffix = cacheBust ? `?t=${Date.now()}` : '';
+  return fetchApiJson<ForecasterBriefing>(`/api/briefing${suffix}`);
 }
 
 export function getAnalyses(): Promise<AnalysisDescriptor[]> {

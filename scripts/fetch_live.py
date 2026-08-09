@@ -68,6 +68,31 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+try:
+    from forecaster_context import (
+        build_briefing,
+        build_region_metrics,
+        merge_area_actuals,
+        parse_dispatch_context,
+        parse_duid_scada,
+        parse_facility_metadata,
+        parse_reserve_context,
+        parse_rooftop_area_actual,
+        parse_rooftop_area_forecast,
+    )
+except ModuleNotFoundError:  # importlib-based tests load the script outside scripts/
+    from scripts.forecaster_context import (
+        build_briefing,
+        build_region_metrics,
+        merge_area_actuals,
+        parse_dispatch_context,
+        parse_duid_scada,
+        parse_facility_metadata,
+        parse_reserve_context,
+        parse_rooftop_area_actual,
+        parse_rooftop_area_forecast,
+    )
+
 
 log = logging.getLogger("fetch_live")
 
@@ -82,6 +107,11 @@ NEMWEB_BASE = "https://nemweb.com.au"
 ROOFTOP_ACTUAL_PATH = "Reports/CURRENT/ROOFTOP_PV/ACTUAL/"
 DEMAND_FORECAST_PATH = "Reports/CURRENT/Operational_Demand/FORECAST_HH/"
 ROOFTOP_FORECAST_PATH = "Reports/CURRENT/ROOFTOP_PV/FORECAST/"
+ROOFTOP_ACTUAL_AREA_PATH = "Reports/CURRENT/ROOFTOP_PV/ACTUAL_AREA/"
+ROOFTOP_FORECAST_AREA_PATH = "Reports/CURRENT/ROOFTOP_PV/FORECAST_AREA/"
+DISPATCH_SCADA_PATH = "Reports/CURRENT/Dispatch_SCADA/"
+DISPATCHIS_PATH = "Reports/CURRENT/DispatchIS_Reports/"
+PDPASA_PATH = "Reports/CURRENT/PDPASA/"
 
 REGIONS = ["NSW1", "VIC1", "QLD1", "SA1", "TAS1"]
 
@@ -254,6 +284,63 @@ def _fetch_nemweb_zip(session: requests.Session, url: str) -> dict[str, list[dic
     resp = session.get(url, timeout=120)
     resp.raise_for_status()
     return _parse_nemweb_zip(resp.content)
+
+
+def _fetch_latest_nemweb_tables(
+    session: requests.Session, rel_path: str
+) -> tuple[str | None, dict[str, list[dict]]]:
+    """Fetch the latest timestamped ZIP in a NEMWEB current-report directory."""
+    entries = [entry for entry in _list_nemweb_dir(session, rel_path) if entry["ts"] is not None]
+    if not entries:
+        raise requests.RequestException(f"{rel_path}: no timestamped ZIP entries found")
+    latest = max(entries, key=lambda entry: entry["ts"])
+    issued_at = latest["ts"].strftime("%Y-%m-%dT%H:%M:%S+10:00")
+    log.info("context source %s: %s", rel_path, latest["filename"])
+    return issued_at, _fetch_nemweb_zip(session, latest["url"])
+
+
+def _read_optional_json(path: Path | None) -> dict | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("could not read %s: %s", path, exc)
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _previous_facility_metadata(previous_context: dict | None) -> dict[str, dict]:
+    assets = ((previous_context or {}).get("duidScada") or {}).get("assets") or []
+    keys = ("facilityCode", "facilityName", "region", "fueltech", "status", "capacityMw")
+    return {
+        asset["duid"]: {key: asset.get(key) for key in keys}
+        for asset in assets
+        if isinstance(asset, dict) and asset.get("duid")
+    }
+
+
+def _facility_metadata_is_fresh(previous_context: dict | None, now: datetime) -> bool:
+    updated_at = (
+        (((previous_context or {}).get("sources") or {}).get("facilityMetadata") or {}).get("updatedAt")
+    )
+    if not isinstance(updated_at, str):
+        return False
+    try:
+        age = now.astimezone(timezone.utc) - datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return age < timedelta(hours=24)
+
+
+def _fetch_facilities(session: requests.Session) -> dict:
+    response = session.get(
+        f"{OE_BASE}/v4/facilities/",
+        params=[("network_id", "NEM"), ("status_id", "operating"), ("status_id", "committed")],
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def _parse_aest_ts(s: str) -> datetime | None:
@@ -614,6 +701,12 @@ def main(argv: list[str]) -> int:
     p.add_argument("--out", type=Path, default=Path("today-live.json"), help="Output JSON path.")
     p.add_argument("--prev", type=Path, default=None,
                    help="Previous output, to carry rooftop/forecast forward on demand-only runs.")
+    p.add_argument("--context-out", type=Path,
+                   help="Write the additive system-context product to this path.")
+    p.add_argument("--briefing-out", type=Path,
+                   help="Write the event model and run-to-run briefing to this path.")
+    p.add_argument("--prev-context", type=Path,
+                   help="Previous system-context product used for deltas and carry-forward.")
     p.add_argument("--force-rooftop", action="store_true",
                    help="Fetch rooftop/forecasts regardless of the minute-of-hour gate.")
     p.add_argument("--verbose", "-v", action="store_true")
@@ -637,6 +730,7 @@ def main(argv: list[str]) -> int:
     oe_sess = _oe_session(api_key)
     nem_sess = _nemweb_session()
     oe_requests = 0
+    previous_context = _read_optional_json(args.prev_context)
 
     try:
         # Demand actuals: always fetch from OE (one multi-region request).
@@ -681,16 +775,188 @@ def main(argv: list[str]) -> int:
         log.error("request failed: %s", exc)
         return 1
 
-    # Budget guard: demand is the only OE request; anything more is a bug.
-    log.info("OE requests this run: %d", oe_requests)
-    if oe_requests > 1:
-        log.error("OE request budget exceeded (%d > 1) — aborting without writing", oe_requests)
-        return 1
-
     updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     payload = assemble(updated_at, demand, rooftop, current_forecast)
-    args.out.write_text(json.dumps(payload, separators=(",", ":")))
+    args.out.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
     log.info("wrote %s (updatedAt=%s)", args.out, updated_at)
+
+    # Context products are deliberately independent of the compatibility live
+    # payload. A failed context source is carried forward or omitted without
+    # preventing the familiar forecast charts from updating.
+    if args.context_out or args.briefing_out:
+        previous_sources = (previous_context or {}).get("sources") or {}
+        sources: dict[str, dict] = {
+            "operationalDemand": {
+                "updatedAt": updated_at,
+                "status": "current",
+                "cadence": "5m",
+                "source": "OpenElectricity/AEMO DISPATCHREGIONSUM",
+            }
+        }
+        context_errors: list[dict[str, str]] = []
+
+        def source_error(name: str, exc: Exception) -> None:
+            message = str(exc)
+            context_errors.append({"source": name, "message": message})
+            carried = dict(previous_sources.get(name) or {})
+            sources[name] = {**carried, "status": "carried-forward", "error": message}
+            log.warning("context source %s failed; carrying forward where possible: %s", name, exc)
+
+        previous_areas = ((previous_context or {}).get("rooftopPvAreas") or {}).get("areas") or {}
+        fresh_area_actual: dict[str, list[dict]] = {}
+        area_forecast = {
+            area: block.get("forecast")
+            for area, block in previous_areas.items()
+            if isinstance(block, dict) and isinstance(block.get("forecast"), dict)
+        }
+        area_actual_issued: str | None = None
+        area_forecast_issued: str | None = None
+        try:
+            area_actual_issued, tables = _fetch_latest_nemweb_tables(nem_sess, ROOFTOP_ACTUAL_AREA_PATH)
+            fresh_area_actual = parse_rooftop_area_actual(tables, today)
+            sources["rooftopPvAreaActual"] = {
+                "updatedAt": area_actual_issued,
+                "status": "current",
+                "cadence": "30m",
+                "source": "AEMO ROOFTOP_PV ACTUAL_AREA",
+            }
+        except Exception as exc:
+            source_error("rooftopPvAreaActual", exc)
+        try:
+            area_forecast_issued, tables = _fetch_latest_nemweb_tables(nem_sess, ROOFTOP_FORECAST_AREA_PATH)
+            fresh_area_forecast = parse_rooftop_area_forecast(tables, today)
+            if fresh_area_forecast:
+                area_forecast = fresh_area_forecast
+            sources["rooftopPvAreaForecast"] = {
+                "updatedAt": area_forecast_issued,
+                "status": "current",
+                "cadence": "30m",
+                "source": "AEMO ROOFTOP_PV FORECAST_AREA",
+            }
+        except Exception as exc:
+            source_error("rooftopPvAreaForecast", exc)
+
+        metadata = _previous_facility_metadata(previous_context)
+        facility_updated_at = (
+            ((previous_sources.get("facilityMetadata") or {}).get("updatedAt"))
+            if isinstance(previous_sources, dict)
+            else None
+        )
+        if not _facility_metadata_is_fresh(previous_context, now_aest):
+            try:
+                metadata_body = _fetch_facilities(oe_sess)
+                oe_requests += 1
+                refreshed = parse_facility_metadata(metadata_body)
+                if refreshed:
+                    metadata = refreshed
+                facility_updated_at = updated_at
+                sources["facilityMetadata"] = {
+                    "updatedAt": facility_updated_at,
+                    "status": "current",
+                    "cadence": "24h",
+                    "source": "OpenElectricity facilities",
+                }
+            except Exception as exc:
+                source_error("facilityMetadata", exc)
+        else:
+            sources["facilityMetadata"] = {
+                "updatedAt": facility_updated_at,
+                "status": "cached",
+                "cadence": "24h",
+                "source": "OpenElectricity facilities",
+            }
+
+        duid_scada = (previous_context or {}).get("duidScada") or {"observedAt": None, "assets": []}
+        try:
+            scada_issued, tables = _fetch_latest_nemweb_tables(nem_sess, DISPATCH_SCADA_PATH)
+            parsed_scada = parse_duid_scada(tables, metadata, previous_context)
+            if parsed_scada.get("assets"):
+                duid_scada = parsed_scada
+            sources["duidScada"] = {
+                "updatedAt": parsed_scada.get("observedAt") or scada_issued,
+                "status": "current",
+                "cadence": "5m",
+                "source": "AEMO DISPATCH_UNIT_SCADA",
+            }
+        except Exception as exc:
+            source_error("duidScada", exc)
+
+        dispatch_context = (previous_context or {}).get("dispatch") or {
+            "observedAt": None,
+            "regions": {},
+            "bindingConstraints": [],
+            "interconnectors": [],
+        }
+        try:
+            dispatch_issued, tables = _fetch_latest_nemweb_tables(nem_sess, DISPATCHIS_PATH)
+            parsed_dispatch = parse_dispatch_context(tables)
+            if parsed_dispatch.get("observedAt"):
+                dispatch_context = parsed_dispatch
+            sources["dispatchContext"] = {
+                "updatedAt": parsed_dispatch.get("observedAt") or dispatch_issued,
+                "status": "current",
+                "cadence": "5m",
+                "source": "AEMO DISPATCHIS",
+            }
+        except Exception as exc:
+            source_error("dispatchContext", exc)
+
+        reserve_context = (previous_context or {}).get("reserve") or {
+            "runAt": None,
+            "horizonHours": 24,
+            "regions": {},
+        }
+        try:
+            reserve_issued, tables = _fetch_latest_nemweb_tables(nem_sess, PDPASA_PATH)
+            parsed_reserve = parse_reserve_context(tables, now_aest)
+            if parsed_reserve.get("regions"):
+                reserve_context = parsed_reserve
+            sources["reserve"] = {
+                "updatedAt": parsed_reserve.get("runAt") or reserve_issued,
+                "status": "current",
+                "cadence": "30m",
+                "source": "AEMO PDPASA LOR run",
+            }
+        except Exception as exc:
+            source_error("reserve", exc)
+
+        area_blocks = merge_area_actuals(previous_context, fresh_area_actual, today)
+        for area, forecast in area_forecast.items():
+            area_blocks.setdefault(area, {"areaId": area, "actual": []})["forecast"] = forecast
+
+        live_demand = {region: values["demand"] for region, values in payload["regions"].items()}
+        live_rooftop = {region: values["rooftopPv"] for region, values in payload["regions"].items()}
+        system_context = {
+            "schemaVersion": "1.0.0",
+            "updatedAt": updated_at,
+            "tradingDate": today,
+            "sources": sources,
+            "regions": build_region_metrics(live_demand, live_rooftop),
+            "currentForecast": current_forecast or {},
+            "rooftopPvAreas": {
+                "actualIssuedAt": area_actual_issued,
+                "forecastIssuedAt": area_forecast_issued,
+                "areas": area_blocks,
+            },
+            "duidScada": duid_scada,
+            "dispatch": dispatch_context,
+            "reserve": reserve_context,
+            "quality": {"status": "partial" if context_errors else "complete", "errors": context_errors},
+        }
+        briefing = build_briefing(system_context, previous_context)
+        if args.context_out:
+            args.context_out.write_text(json.dumps(system_context, separators=(",", ":")), encoding="utf-8")
+            log.info("wrote %s", args.context_out)
+        if args.briefing_out:
+            args.briefing_out.write_text(json.dumps(briefing, separators=(",", ":")), encoding="utf-8")
+            log.info("wrote %s (%d events)", args.briefing_out, len(briefing["events"]))
+
+    # Demand uses one OE request every run. Facility metadata adds at most one
+    # request per day, keeping the existing free-tier budget comfortably bounded.
+    log.info("OE requests this run: %d", oe_requests)
+    if oe_requests > 2:
+        log.error("OE request budget exceeded (%d > 2)", oe_requests)
+        return 1
     return 0
 
 

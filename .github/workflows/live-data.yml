@@ -58,8 +58,10 @@ jobs:
           if git fetch --depth=1 origin live-data 2>/dev/null \
              && git show FETCH_HEAD:today-live.json > prev-live.json 2>/dev/null; then
             echo "seeded prev-live.json from live-data"
+            git show FETCH_HEAD:system-context.json > prev-context.json 2>/dev/null || rm -f prev-context.json
           else
             rm -f prev-live.json
+            rm -f prev-context.json
             echo "no previous today-live.json yet; starting fresh"
           fi
 
@@ -68,8 +70,9 @@ jobs:
           OE_API_KEY: ${{ secrets.OE_API_KEY }}
         run: |
           set -euo pipefail
-          ARGS=(--out today-live.json --verbose)
+          ARGS=(--out today-live.json --context-out system-context.json --briefing-out forecaster-briefing.json --verbose)
           [ -f prev-live.json ] && ARGS+=(--prev prev-live.json)
+          [ -f prev-context.json ] && ARGS+=(--prev-context prev-context.json)
           [ "${{ inputs.force_rooftop }}" = "true" ] && ARGS+=(--force-rooftop)
           uv run scripts/fetch_live.py "${ARGS[@]}"
 
@@ -78,16 +81,17 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Build a single-file root (orphan) commit with git plumbing and
-          # force-push it, so live-data always holds exactly this one file with
-          # no accumulating history. The working tree (main's checkout) is
-          # untouched.
+          # Build a three-product root (orphan) commit with git plumbing and
+          # force-push it, so live-data has no accumulating history. The
+          # compatibility live file keeps its existing URL and contract.
           updated_at="$(python3 -c "import json;print(json.load(open('today-live.json'))['updatedAt'])")"
-          blob="$(git hash-object -w today-live.json)"
-          tree="$(printf '100644 blob %s\ttoday-live.json\n' "$blob" | git mktree)"
+          live_blob="$(git hash-object -w today-live.json)"
+          context_blob="$(git hash-object -w system-context.json)"
+          briefing_blob="$(git hash-object -w forecaster-briefing.json)"
+          tree="$(printf '100644 blob %s\tforecaster-briefing.json\n100644 blob %s\tsystem-context.json\n100644 blob %s\ttoday-live.json\n' "$briefing_blob" "$context_blob" "$live_blob" | git mktree)"
           commit="$(git commit-tree "$tree" -m "live: ${updated_at}")"
           git push -f origin "${commit}:refs/heads/live-data"
-          echo "published today-live.json to live-data (updatedAt=${updated_at})"
+          echo "published live, system-context, and briefing products (updatedAt=${updated_at})"
 
       - name: Publish live data to Cloudflare R2
         env:
@@ -99,4 +103,8 @@ jobs:
             echo "Cloudflare live publish skipped: set CLOUDFLARE_API_TOKEN secret and NEMWEB_R2_BUCKET variable."
             exit 0
           fi
-          python3 scripts/publish_cloudflare.py --only-live --live today-live.json --bucket "$NEMWEB_R2_BUCKET"
+          python3 scripts/publish_cloudflare.py --only-live \
+            --live today-live.json \
+            --system-context system-context.json \
+            --briefing forecaster-briefing.json \
+            --bucket "$NEMWEB_R2_BUCKET"

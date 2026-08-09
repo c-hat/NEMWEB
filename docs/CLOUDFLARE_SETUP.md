@@ -101,6 +101,8 @@ compat/index.json
 compat/latest.json
 compat/live.json
 compat/day/<YYYY-MM-DD>.json
+context/system/latest.json
+analysis/forecaster-briefing/latest.json
 ```
 
 ## 3. Create The D1 Database
@@ -113,7 +115,7 @@ npx wrangler d1 create nemweb-catalog-prod --location oc
 ```
 
 Copy the `database_id` from Wrangler's output. You will paste it into
-`worker/wrangler.toml`.
+`worker/wrangler.jsonc`.
 
 Recommended database name:
 
@@ -123,26 +125,32 @@ nemweb-catalog-prod
 
 ## 4. Configure Worker Bindings
 
-Edit `worker/wrangler.toml` and add the real R2 and D1 bindings.
+Edit `worker/wrangler.jsonc` and add the real R2 and D1 bindings.
 
-```toml
-[[r2_buckets]]
-binding = "NEMWEB_BUCKET"
-bucket_name = "nemweb-data-prod"
-
-[[d1_databases]]
-binding = "NEMWEB_DB"
-database_name = "nemweb-catalog-prod"
-database_id = "cb7b05b5-64fb-4fad-94dc-f0566f480a36"
-migrations_dir = "migrations"
-
-[vars]
-DATA_FALLBACK_BASE_URL = "https://raw.githubusercontent.com/c-hat/NEMWEB/main/public"
-LIVE_DATA_URL = "https://raw.githubusercontent.com/c-hat/NEMWEB/live-data/today-live.json"
-ALLOWED_ORIGIN = "https://nemweb.pages.dev"
-
-[observability.logs]
-enabled = true
+```jsonc
+{
+  "r2_buckets": [
+    { "binding": "NEMWEB_BUCKET", "bucket_name": "nemweb-data-prod" }
+  ],
+  "d1_databases": [
+    {
+      "binding": "NEMWEB_DB",
+      "database_name": "nemweb-catalog-prod",
+      "database_id": "cb7b05b5-64fb-4fad-94dc-f0566f480a36",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "DATA_FALLBACK_BASE_URL": "https://raw.githubusercontent.com/c-hat/NEMWEB/main/public",
+    "LIVE_DATA_URL": "https://raw.githubusercontent.com/c-hat/NEMWEB/live-data/today-live.json",
+    "ALLOWED_ORIGIN": "https://nemweb.pages.dev"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true },
+    "traces": { "enabled": true, "head_sampling_rate": 0.05 }
+  }
+}
 ```
 
 If a custom production domain is configured for Pages, use that final public
@@ -366,6 +374,8 @@ Live-data publish:
 python3 scripts/publish_cloudflare.py \
   --only-live \
   --live today-live.json \
+  --system-context system-context.json \
+  --briefing forecaster-briefing.json \
   --bucket nemweb-data-prod
 ```
 
@@ -382,8 +392,9 @@ The historical publisher:
    availability.
 
 The scheduled `ingest` workflow publishes historical/static data after
-generating `public/data`. The `live-data` workflow publishes `today-live.json`
-to `compat/live.json` after each live refresh.
+generating `public/data`. The `live-data` workflow publishes `today-live.json`,
+`system-context.json`, and `forecaster-briefing.json` to their R2 current-object
+keys after each live refresh.
 
 D1 catalog publishing from CI is gated behind:
 
