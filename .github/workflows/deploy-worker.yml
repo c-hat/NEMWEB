@@ -5,9 +5,8 @@ name: deploy-worker
 # used by the Cloudflare Pages branch preview.
 #
 # Requires a repository secret CLOUDFLARE_API_TOKEN (Settings → Secrets and
-# variables → Actions) with "Edit Cloudflare Workers" permission. The OE_API_KEY
-# Worker secret is set once via `wrangler secret put` and persists across
-# deploys — it does not need to be in CI.
+# variables → Actions) with Workers deployment permission. GH_DISPATCH_TOKEN is
+# set once as a Worker secret and persists across deploys.
 on:
   push:
     branches: [main, architecture-docs]

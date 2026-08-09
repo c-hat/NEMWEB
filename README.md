@@ -120,6 +120,10 @@ The Worker exposes:
 - `GET /api/latest`
 - `GET /api/day/:date`
 - `GET /api/live`
+- `GET /api/system-context`
+- `GET /api/briefing`
+- `GET /api/events`
+- `GET /api/status`
 - `GET /api/analyses`
 - `GET /api/analyses/:id`
 
@@ -132,7 +136,7 @@ npm run typecheck
 npm run dev
 ```
 
-Deployments use Wrangler and the bindings in `worker/wrangler.toml`.
+Deployments use Wrangler and the bindings in `worker/wrangler.jsonc`.
 
 ## Storage And Publish
 
@@ -150,6 +154,8 @@ Live data can be published independently:
 python3 scripts/publish_cloudflare.py \
   --only-live \
   --live today-live.json \
+  --system-context system-context.json \
+  --briefing forecaster-briefing.json \
   --bucket nemweb-data-prod
 ```
 

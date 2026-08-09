@@ -82,11 +82,27 @@ def test_publish_plan_maps_compatibility_objects_and_catalog_sql(tmp_path):
 
 def test_only_live_plan_uploads_no_d1_sql(tmp_path):
     live = tmp_path / "today-live.json"
+    context = tmp_path / "system-context.json"
+    briefing = tmp_path / "forecaster-briefing.json"
     _write_json(live, {"updatedAt": "2026-06-05T12:00:00+10:00", "regions": {}})
+    _write_json(context, {"updatedAt": "2026-06-05T12:00:00+10:00", "regions": {}})
+    _write_json(briefing, {"generatedAt": "2026-06-05T12:00:00+10:00", "events": []})
 
-    plan = pc.create_plan(tmp_path / "missing-data-dir", "2026-06-05T00:00:00Z", tmp_path, live, True)
+    plan = pc.create_plan(
+        tmp_path / "missing-data-dir",
+        "2026-06-05T00:00:00Z",
+        tmp_path,
+        live,
+        True,
+        context,
+        briefing,
+    )
 
-    assert [(upload.source, upload.key) for upload in plan.uploads] == [(live, "compat/live.json")]
+    assert [(upload.source, upload.key) for upload in plan.uploads] == [
+        (live, "compat/live.json"),
+        (context, "context/system/latest.json"),
+        (briefing, "analysis/forecaster-briefing/latest.json"),
+    ]
     assert plan.sql == ""
 
 

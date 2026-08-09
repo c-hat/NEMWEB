@@ -166,14 +166,20 @@ def build_uploads(
     today: str | None,
     analysis_payload_path: Path | None,
     live_path: Path | None,
+    system_context_path: Path | None,
+    briefing_path: Path | None,
     only_live: bool,
 ) -> list[Upload]:
     uploads: list[Upload] = []
 
     if live_path is not None:
         uploads.append(Upload(live_path, "compat/live.json"))
-        if only_live:
-            return uploads
+    if system_context_path is not None:
+        uploads.append(Upload(system_context_path, "context/system/latest.json"))
+    if briefing_path is not None:
+        uploads.append(Upload(briefing_path, "analysis/forecaster-briefing/latest.json"))
+    if only_live:
+        return uploads
 
     for date in dates:
         uploads.append(Upload(data_dir / f"{date}.json", f"compat/day/{date}.json"))
@@ -321,12 +327,23 @@ def create_plan(
     temp_dir: Path,
     live_path: Path | None = None,
     only_live: bool = False,
+    system_context_path: Path | None = None,
+    briefing_path: Path | None = None,
 ) -> PublishPlan:
     if only_live:
         if live_path is None:
             raise ValueError("--only-live requires --live")
         return PublishPlan(
-            uploads=build_uploads(data_dir, [], None, None, live_path, only_live=True),
+            uploads=build_uploads(
+                data_dir,
+                [],
+                None,
+                None,
+                live_path,
+                system_context_path,
+                briefing_path,
+                only_live=True,
+            ),
             dates=[],
             today=None,
             analysis_payload=None,
@@ -342,7 +359,16 @@ def create_plan(
         write_json(analysis_path, analysis)
 
     sql = build_sql(dates, today, analysis)
-    uploads = build_uploads(data_dir, dates, today, analysis_path, live_path, only_live=False)
+    uploads = build_uploads(
+        data_dir,
+        dates,
+        today,
+        analysis_path,
+        live_path,
+        system_context_path,
+        briefing_path,
+        only_live=False,
+    )
     return PublishPlan(uploads=uploads, dates=dates, today=today, analysis_payload=analysis, sql=sql)
 
 
@@ -442,6 +468,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--database", default=os.environ.get("NEMWEB_D1_DATABASE_NAME", DEFAULT_DATABASE))
     parser.add_argument("--worker-dir", type=Path, default=DEFAULT_WORKER_DIR)
     parser.add_argument("--live", type=Path, help="Upload a live-data JSON file to compat/live.json")
+    parser.add_argument("--system-context", type=Path,
+                        help="Upload system-context JSON to context/system/latest.json")
+    parser.add_argument("--briefing", type=Path,
+                        help="Upload briefing JSON to analysis/forecaster-briefing/latest.json")
     parser.add_argument("--only-live", action="store_true", help="Only publish --live to R2")
     parser.add_argument("--skip-d1", action="store_true", help="Upload R2 objects but skip D1 catalog writes")
     parser.add_argument("--concurrency", type=int, default=4)
@@ -455,9 +485,19 @@ def main(argv: list[str] | None = None) -> int:
     worker_dir = args.worker_dir.resolve()
     data_dir = args.data_dir.resolve()
     live_path = args.live.resolve() if args.live else None
+    system_context_path = args.system_context.resolve() if args.system_context else None
+    briefing_path = args.briefing.resolve() if args.briefing else None
 
     with tempfile.TemporaryDirectory() as tmp:
-        plan = create_plan(data_dir, generated_at, Path(tmp), live_path=live_path, only_live=args.only_live)
+        plan = create_plan(
+            data_dir,
+            generated_at,
+            Path(tmp),
+            live_path=live_path,
+            system_context_path=system_context_path,
+            briefing_path=briefing_path,
+            only_live=args.only_live,
+        )
         print(
             f"publish plan: {len(plan.uploads)} R2 objects"
             f"{f', {len(plan.dates)} historical days' if plan.dates else ''}"

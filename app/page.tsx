@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import ForecastErrorChart from '@/components/ForecastErrorChart';
 import ForecastChart from '@/components/ForecastChart';
+import SystemContextPanel from '@/components/SystemContextPanel';
 import { downloadCsv, regionDataToCsv } from '@/lib/csv';
 import {
   buildNemRegion,
@@ -19,6 +20,7 @@ import {
   type SelectableRegion,
 } from '@/lib/dataClient';
 import { useLiveData } from '@/lib/useLiveData';
+import { useSystemContext } from '@/lib/useSystemContext';
 import { fetchLiveFile, type CurrentForecast, type ForecastSeries, type LiveFile } from '@/lib/live';
 import { buildLiveOnlyDayData, currentAestDate, liveTradingDate } from '@/lib/liveDay';
 
@@ -196,6 +198,7 @@ export default function Home() {
   // no-ops when inactive. Region switches read from the file with no refetch.
   const isLive = !!todayDate && selectedDate === todayDate && !!todayData;
   const live = useLiveData(isLive);
+  const systemContext = useSystemContext(isLive);
   const activeLiveDate = liveTradingDate(live.file) ?? initialLiveDate;
   const liveMatchesSelected = isLive && activeLiveDate === selectedDate;
   const liveRegion = liveMatchesSelected ? live.file?.regions[region] : undefined;
@@ -328,6 +331,17 @@ export default function Home() {
 
       {error && <p className="error">Error loading data: {error}</p>}
       {loading && !error && <p className="status">Loading…</p>}
+
+      {!loading && !error && isLive && systemContext.context && (
+        <SystemContextPanel
+          context={systemContext.context}
+          briefing={systemContext.briefing}
+          region={region}
+          demandActual={liveMatchesSelected ? (liveRegion?.demand ?? []) : []}
+          demandForecast={liveDemandForecast}
+          stale={systemContext.stale}
+        />
+      )}
 
       {!loading && !error && day && regionData && (
         <section className="charts">

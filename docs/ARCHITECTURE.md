@@ -34,11 +34,15 @@ GitHub Actions workflow_dispatch
         v
 `scripts/fetch_live.py`
         |
-        v
-force-pushed `live-data` branch
-        |
-        v
-browser fetches raw.githubusercontent.com today-live.json
+        +-- compatibility live payload --------> R2 compat/live.json
+        +-- normalized system context ---------> R2 context/system/latest.json
+        +-- derived events + run briefing -----> R2 analysis/forecaster-briefing/latest.json
+                                                   |
+                                                   v
+                                           Cloudflare Worker API
+                                                   |
+                                                   v
+                                           Cloudflare Pages frontend
 ```
 
 Important current facts:
@@ -46,9 +50,11 @@ Important current facts:
 - The frontend is a static Next.js export configured by `next.config.js`.
 - Runtime historical data is read from `public/data`.
 - `lib/data.ts` owns current frontend JSON fetches and TypeScript contracts.
-- `lib/live.ts` owns the current live JSON fetch from `raw.githubusercontent.com`.
+- `lib/live.ts` owns the compatibility live client; `lib/systemContext.ts` owns
+  the additive operational context and briefing clients.
 - `ingest/` owns generated historical JSON payloads.
-- `worker/` is currently a cron dispatcher. It is not yet the browser data API.
+- `worker/` is both the cron dispatcher and the browser data API. R2 is primary;
+  GitHub-hosted compatibility objects remain a migration fallback.
 - The ingest workflow currently commits generated JSON back into the repo.
 - `.github/workflows/` contains the current CI, Pages deploy, ingest, live-data,
   and Worker deploy automation.
@@ -105,6 +111,21 @@ Examples:
 - Analysis: daily demand forecast error ranking.
 - Visualisation: forecast vs actual chart for a selected date and region.
 
+The operational forecaster products follow the same split:
+
+- Sources: AEMO rooftop-area, Dispatch SCADA, DispatchIS and PDPASA reports,
+  plus OpenElectricity operational demand and facility metadata.
+- Dataset/product: `system-context` is a bounded, source-independent current
+  state projection. It does not encode React view decisions.
+- Analysis: `forecaster-briefing` compares consecutive context runs and emits
+  versioned events with evidence, thresholds and confidence.
+- Visualisation: the live briefing, ramp chart, area table, DUID movers and
+  network detail consume only those browser contracts.
+
+Operational demand is grid-supplied demand and is already net of rooftop PV.
+The application calculates underlying demand as operational demand plus the
+co-timed rooftop PV estimate; it never subtracts rooftop PV a second time.
+
 ## Incremental Migration Path
 
 1. Document and preserve current contracts.
@@ -115,7 +136,8 @@ Examples:
 4. Move generated payload writes from `public/data` to R2 while maintaining API
    compatibility.
 5. Add D1 catalog tables for days, datasets, source runs, and analyses.
-6. Refactor frontend data loading to use Worker API endpoints.
+6. Refactor frontend data loading to use Worker API endpoints. This is complete
+   for Cloudflare Pages; static GitHub objects remain rollback fallbacks.
 7. Move visualisations toward feature/view definitions after data access is
    behind the Worker boundary.
 
@@ -125,3 +147,4 @@ Examples:
 - Do not remove `public/data` until the Worker API replacement is live.
 - Do not make stabilisation-only changes unless required by the active task.
 - Do not couple new analyses directly to raw source formats.
+- Do not infer a cause for DUID SCADA movement from output movement alone.

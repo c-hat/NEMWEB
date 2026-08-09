@@ -27,23 +27,18 @@ import {
   compatLatestKey,
   compatLiveKey,
   compatTodayKey,
+  forecasterBriefingKey,
   analysisKey,
   getCatalog,
   getJsonObject,
+  systemContextKey,
   type Catalog,
   type JsonValue,
   type StorageEnv,
 } from "./storage";
+import { freshestProduct, productFreshness } from "./products";
 
-export interface Env {
-  GH_DISPATCH_TOKEN: string;
-  WORKFLOW_REF?: string;
-  NEMWEB_BUCKET?: R2Bucket;
-  NEMWEB_DB?: D1Database;
-  DATA_FALLBACK_BASE_URL?: string;
-  LIVE_DATA_URL?: string;
-  ALLOWED_ORIGIN?: string;
-}
+type RuntimeEnv = Env & { GH_DISPATCH_TOKEN?: string };
 
 const OWNER = "c-hat";
 const REPO = "NEMWEB";
@@ -57,8 +52,18 @@ const AEST_OFFSET_HOURS = 10;
 const ACTIVE_START_AEST = 6; // inclusive; active hours are 06:00-23:59 AEST
 const STATIC_DATA_BASE_URL = "https://raw.githubusercontent.com/c-hat/NEMWEB/main/public";
 const LIVE_DATA_URL = "https://raw.githubusercontent.com/c-hat/NEMWEB/live-data/today-live.json";
+const SYSTEM_CONTEXT_URL = "https://raw.githubusercontent.com/c-hat/NEMWEB/live-data/system-context.json";
+const FORECASTER_BRIEFING_URL = "https://raw.githubusercontent.com/c-hat/NEMWEB/live-data/forecaster-briefing.json";
 const DEMAND_ERROR_ANALYSIS_ID = "demand-forecast-error-ranking";
 const LEGACY_DEMAND_ERROR_ANALYSIS_ID = "demand-error-ranking";
+
+function logEvent(
+  level: "info" | "error",
+  event: string,
+  fields: Record<string, unknown> = {},
+): void {
+  console[level](JSON.stringify({ level, event, at: new Date().toISOString(), ...fields }));
+}
 
 function aestHour(now: Date): number {
   return (now.getUTCHours() + AEST_OFFSET_HOURS) % 24;
@@ -85,7 +90,7 @@ async function dispatch(token: string, ref = DEFAULT_WORKFLOW_REF): Promise<Resp
   });
 }
 
-function apiHeaders(env: Env, cacheControl = "no-store"): Headers {
+function apiHeaders(env: RuntimeEnv, cacheControl = "no-store"): Headers {
   return new Headers({
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": env.ALLOWED_ORIGIN || "*",
@@ -96,7 +101,7 @@ function apiHeaders(env: Env, cacheControl = "no-store"): Headers {
 }
 
 function jsonResponse(
-  env: Env,
+  env: RuntimeEnv,
   body: unknown,
   init: ResponseInit & { cacheControl?: string } = {},
 ): Response {
@@ -107,15 +112,15 @@ function jsonResponse(
   return new Response(JSON.stringify(body), { ...init, headers });
 }
 
-function errorResponse(env: Env, status: number, message: string): Response {
+function errorResponse(env: RuntimeEnv, status: number, message: string): Response {
   return jsonResponse(env, { error: { status, message } }, { status });
 }
 
-function hasStorage(env: Env): env is Env & StorageEnv {
+function hasStorage(env: RuntimeEnv): env is RuntimeEnv & StorageEnv {
   return !!env.NEMWEB_BUCKET && !!env.NEMWEB_DB;
 }
 
-function fallbackBase(env: Env): string {
+function fallbackBase(env: RuntimeEnv): string {
   return (env.DATA_FALLBACK_BASE_URL || STATIC_DATA_BASE_URL).replace(/\/$/, "");
 }
 
@@ -126,16 +131,31 @@ async function fetchFallbackJson<T>(url: string): Promise<T | null> {
 }
 
 async function compatSources(
-  env: Env,
+  env: RuntimeEnv,
   key: string,
   fallbackPath: string,
 ): Promise<{ r2Body: JsonValue | null; fallbackBody: JsonValue | null }> {
   const r2Promise = env.NEMWEB_BUCKET
-    ? getJsonObject<JsonValue>(env as Env & StorageEnv, key)
+    ? getJsonObject<JsonValue>(env, key)
     : Promise.resolve(null);
   const fallbackPromise = fetchFallbackJson<JsonValue>(`${fallbackBase(env)}${fallbackPath}`);
   const [r2Body, fallbackBody] = await Promise.all([r2Promise, fallbackPromise]);
   return { r2Body, fallbackBody };
+}
+
+async function latestProduct(
+  env: RuntimeEnv,
+  key: string,
+  fallbackUrl: string,
+  fields: string[],
+): Promise<JsonValue | null> {
+  const [r2Body, fallbackBody] = await Promise.all([
+    env.NEMWEB_BUCKET
+      ? getJsonObject<JsonValue>(env, key)
+      : Promise.resolve(null),
+    fetchFallbackJson<JsonValue>(fallbackUrl),
+  ]);
+  return freshestProduct(r2Body, fallbackBody, fields);
 }
 
 function sameTradingDate(body: JsonValue | null, date: string): JsonValue | null {
@@ -150,7 +170,7 @@ function canonicalAnalysisId(id: string): string {
   return id === LEGACY_DEMAND_ERROR_ANALYSIS_ID ? DEMAND_ERROR_ANALYSIS_ID : id;
 }
 
-async function demandErrorFallback(env: Env): Promise<JsonValue | null> {
+async function demandErrorFallback(env: RuntimeEnv): Promise<JsonValue | null> {
   const compat = await fetchFallbackJson<JsonValue>(
     `${fallbackBase(env)}/data/demand-error-rankings.json`,
   );
@@ -172,7 +192,7 @@ async function demandErrorFallback(env: Env): Promise<JsonValue | null> {
   };
 }
 
-async function handleApi(req: Request, env: Env): Promise<Response> {
+async function handleApi(req: Request, env: RuntimeEnv): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname.replace(/\/+$/, "") || "/";
 
@@ -228,13 +248,71 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
   if (path === "/api/live") {
     let r2Body: JsonValue | null = null;
     if (env.NEMWEB_BUCKET) {
-      r2Body = await getJsonObject<JsonValue>(env as Env & StorageEnv, compatLiveKey());
+      r2Body = await getJsonObject<JsonValue>(env, compatLiveKey());
     }
     const fallbackBody = await fetchFallbackJson<JsonValue>(env.LIVE_DATA_URL || LIVE_DATA_URL);
     const body = freshestLive(r2Body, fallbackBody);
     return body == null
       ? errorResponse(env, 503, "Live data is unavailable")
       : jsonResponse(env, body, { cacheControl: "public, max-age=30" });
+  }
+
+  if (path === "/api/system-context") {
+    const body = await latestProduct(env, systemContextKey(), SYSTEM_CONTEXT_URL, ["updatedAt"]);
+    return body == null
+      ? errorResponse(env, 503, "System context is unavailable")
+      : jsonResponse(env, body, { cacheControl: "public, max-age=30" });
+  }
+
+  if (path === "/api/briefing") {
+    const body = await latestProduct(
+      env,
+      forecasterBriefingKey(),
+      FORECASTER_BRIEFING_URL,
+      ["generatedAt", "updatedAt"],
+    );
+    return body == null
+      ? errorResponse(env, 503, "Forecaster briefing is unavailable")
+      : jsonResponse(env, body, { cacheControl: "public, max-age=30" });
+  }
+
+  if (path === "/api/events") {
+    const body = await latestProduct(
+      env,
+      forecasterBriefingKey(),
+      FORECASTER_BRIEFING_URL,
+      ["generatedAt", "updatedAt"],
+    );
+    const events = isJsonRecord(body) && Array.isArray(body.events) ? body.events : null;
+    return events == null
+      ? errorResponse(env, 503, "Events are unavailable")
+      : jsonResponse(env, events, { cacheControl: "public, max-age=30" });
+  }
+
+  if (path === "/api/status") {
+    const [live, context, briefing, latest] = await Promise.all([
+      latestProduct(env, compatLiveKey(), env.LIVE_DATA_URL || LIVE_DATA_URL, ["updatedAt"]),
+      latestProduct(env, systemContextKey(), SYSTEM_CONTEXT_URL, ["updatedAt"]),
+      latestProduct(env, forecasterBriefingKey(), FORECASTER_BRIEFING_URL, ["generatedAt"]),
+      compatSources(env, compatLatestKey(), "/data/latest.json").then(({ r2Body, fallbackBody }) =>
+        newestLatest(r2Body, fallbackBody),
+      ),
+    ]);
+    const latestDate = isJsonRecord(latest) && typeof latest.date === "string" ? latest.date : null;
+    const products = {
+      live: productFreshness(live, ["updatedAt"], 25),
+      systemContext: productFreshness(context, ["updatedAt"], 25),
+      briefing: productFreshness(briefing, ["generatedAt"], 25),
+      historical: { available: latestDate != null, latestDate },
+    };
+    const operational = !products.live.stale && !products.systemContext.stale && !products.briefing.stale;
+    return jsonResponse(env, {
+      service: "nemweb-api",
+      status: operational ? "operational" : "degraded",
+      version: env.CF_VERSION_METADATA?.id ?? null,
+      checkedAt: new Date().toISOString(),
+      products,
+    });
   }
 
   if (path === "/api/catalog") {
@@ -255,7 +333,7 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
     let body: JsonValue | null = null;
     if (env.NEMWEB_BUCKET && descriptor) {
       body = await getJsonObject<JsonValue>(
-        env as Env & StorageEnv,
+        env,
         analysisKey(id, descriptor.version),
       );
     }
@@ -271,36 +349,62 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  // Cloudflare cron trigger (see [triggers] crons in wrangler.toml).
-  async scheduled(_event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+  // Cloudflare cron trigger (see triggers.crons in wrangler.jsonc).
+  async scheduled(_event: ScheduledController, env: RuntimeEnv, _ctx: ExecutionContext): Promise<void> {
     const now = new Date();
     const h = aestHour(now);
     if (h < ACTIVE_START_AEST) {
-      console.log(`pinger: ${now.toISOString()} (AEST hour ${h}) outside active window; skip`);
+      logEvent("info", "dispatch.skipped", { reason: "outside-active-window", aestHour: h });
       return;
     }
     if (!env.GH_DISPATCH_TOKEN) {
-      console.error("pinger: GH_DISPATCH_TOKEN secret is not set; cannot dispatch");
+      logEvent("error", "dispatch.failed", { reason: "secret-not-configured" });
       return;
     }
     const ref = env.WORKFLOW_REF || DEFAULT_WORKFLOW_REF;
-    const res = await dispatch(env.GH_DISPATCH_TOKEN, ref);
+    let res: Response;
+    try {
+      res = await dispatch(env.GH_DISPATCH_TOKEN, ref);
+    } catch (error) {
+      logEvent("error", "dispatch.failed", {
+        workflow: WORKFLOW,
+        ref,
+        reason: "network-error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
     if (res.status === 204) {
-      console.log(`pinger: dispatched ${WORKFLOW}@${ref} (AEST hour ${h}) -> 204`);
+      logEvent("info", "dispatch.succeeded", { workflow: WORKFLOW, ref, aestHour: h });
     } else {
       // GitHub returns 404 if the token lacks Actions:write, 401 if invalid.
       const body = await res.text().catch(() => "");
-      console.error(`pinger: dispatch failed ${res.status}: ${body.slice(0, 300)}`);
+      logEvent("error", "dispatch.failed", {
+        workflow: WORKFLOW,
+        ref,
+        status: res.status,
+        response: body.slice(0, 300),
+      });
     }
   },
 
   // Health check + compatibility API. Nothing is triggered here, so the public
   // workers.dev URL cannot be used to burn the OE request budget; dispatch
   // still happens solely on the cron schedule above.
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: RuntimeEnv): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname.startsWith("/api/")) {
-      return handleApi(req, env);
+      try {
+        return await handleApi(req, env);
+      } catch (error) {
+        logEvent("error", "api.request.failed", {
+          method: req.method,
+          path: url.pathname,
+          version: env.CF_VERSION_METADATA?.id ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return errorResponse(env, 500, "Internal service error");
+      }
     }
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: apiHeaders(env) });

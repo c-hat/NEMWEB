@@ -6,6 +6,7 @@ node_modules/
 out/
 .DS_Store
 *.tsbuildinfo
+worker-startup.cpuprofile
 
 # Playwright
 /test-results/

@@ -1,7 +1,4 @@
-export interface StorageEnv {
-  NEMWEB_BUCKET: R2Bucket;
-  NEMWEB_DB: D1Database;
-}
+export type StorageEnv = Pick<Env, 'NEMWEB_BUCKET' | 'NEMWEB_DB'>;
 
 export type JsonValue =
   | string
@@ -141,6 +138,14 @@ export function compatLatestKey(): string {
 
 export function compatLiveKey(): string {
   return 'compat/live.json';
+}
+
+export function systemContextKey(): string {
+  return 'context/system/latest.json';
+}
+
+export function forecasterBriefingKey(): string {
+  return 'analysis/forecaster-briefing/latest.json';
 }
 
 export function analysisKey(analysisId: string, version: string): string {

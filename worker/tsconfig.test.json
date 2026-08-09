@@ -3,11 +3,11 @@
   "compilerOptions": {
     "module": "commonjs",
     "moduleResolution": "node",
-    "types": ["@cloudflare/workers-types", "node"],
+    "types": ["node"],
     "noEmit": false,
     "outDir": ".tmp/test-dist",
     "incremental": false
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "worker-configuration.d.ts"],
   "exclude": []
 }

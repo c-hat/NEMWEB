@@ -235,6 +235,65 @@ Returns live actuals and current forecast context for the active trading day.
 The initial API can mirror the current live file while hiding the storage
 location from the browser.
 
+This contract is intentionally unchanged by the operational-context release.
+
+### `GET /api/system-context`
+
+Returns a bounded current-state product with `schemaVersion`, `updatedAt`,
+`tradingDate`, per-source freshness, and these independently named sections:
+
+- `regions`: current operational demand, 5/30/60-minute ramps, and underlying
+  demand for each NEM region and the NEM aggregate.
+- `currentForecast`: the current regional demand and rooftop-PV POE50 series.
+- `rooftopPvAreas`: AEMO rooftop-PV actual and forecast load-area series.
+- `duidScada`: current and previous-run DUID SCADA observations plus facility
+  metadata where available.
+- `dispatch`: regional dispatch context, binding constraints and
+  interconnectors.
+- `reserve`: 24-hour PDPASA surplus-reserve and LOR context.
+- `quality`: `complete` or `partial`, with per-source errors. Partial context
+  does not make `/api/live` unavailable.
+
+Semantic rules:
+
+- Operational demand is grid-supplied demand, already net of rooftop PV.
+- Underlying demand is operational demand plus the co-timed rooftop PV estimate.
+- A ramp is current operational demand minus the most recent observation at or
+  before the stated lookback.
+- `deltaMw` on a DUID is SCADA output movement since the previous live run. It
+  is not a curtailment, trip or weather-cause diagnosis.
+- Fixed AEST timestamps use an explicit `+10:00` offset.
+
+### `GET /api/briefing`
+
+Returns the derived comparison with:
+
+- `schemaVersion`, `generatedAt`, and `comparedWith`.
+- `summary` and the first material `changes` for direct briefing display.
+- `events`, the complete bounded event list for the run.
+
+Each event contains:
+
+- `id`, `type`, `status`, `severity` and `scope`.
+- `observedAt`, `headline` and `detail`.
+- typed values under `metrics`.
+- `evidence` source IDs and a `confidence` label.
+
+Initial event types are `forecast-revision`, `demand-ramp`, `reserve-risk`,
+`binding-constraint`, and `duid-movement`. Thresholds are analysis policy and
+must be fixture-tested when changed.
+
+### `GET /api/events`
+
+Returns the `events` array from the latest forecaster briefing. This is a
+convenience projection; `/api/briefing` is the authoritative analysis payload.
+
+### `GET /api/status`
+
+Returns Worker service health and independent freshness for live, system
+context, briefing and historical products. Live products older than 25 minutes
+during the operating window make the service `degraded`.
+
 ### `GET /api/analyses`
 
 Returns analysis descriptors and availability, not necessarily full payloads.
@@ -332,6 +391,12 @@ R2 should eventually store:
 - normalized dataset payloads
 - generated frontend-compatible payloads during migration
 - derived analysis payloads
+
+Current live object keys are internal implementation details:
+
+- `compat/live.json`
+- `context/system/latest.json`
+- `analysis/forecaster-briefing/latest.json`
 
 Do not expose R2 object keys as frontend contracts unless they are explicitly
 documented as stable public API fields.

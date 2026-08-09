@@ -7,13 +7,14 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "test": "tsc -p tsconfig.test.json && node --test .tmp/test-dist/compat.test.js",
-    "typecheck": "tsc --noEmit"
+    "test": "tsc -p tsconfig.test.json && node --test .tmp/test-dist/*.test.js",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types worker-configuration.d.ts",
+    "check:startup": "wrangler check startup"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4",
     "@types/node": "^22.19.19",
     "typescript": "^5.7.3",
-    "wrangler": "^4"
+    "wrangler": "^4.120.0"
   }
 }

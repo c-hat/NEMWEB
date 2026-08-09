@@ -1,0 +1,72 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nemweb-live-pinger",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "triggers": {
+    "crons": ["*/10 * * * *"]
+  },
+  "r2_buckets": [
+    {
+      "binding": "NEMWEB_BUCKET",
+      "bucket_name": "nemweb-data-prod"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "NEMWEB_DB",
+      "database_name": "nemweb-catalog-prod",
+      "database_id": "cb7b05b5-64fb-4fad-94dc-f0566f480a36",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "DATA_FALLBACK_BASE_URL": "https://raw.githubusercontent.com/c-hat/NEMWEB/main/public",
+    "LIVE_DATA_URL": "https://raw.githubusercontent.com/c-hat/NEMWEB/live-data/today-live.json",
+    "ALLOWED_ORIGIN": "https://nemweb.pages.dev"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.05
+    }
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "env": {
+    "preview": {
+      "name": "nemweb-live-pinger-preview",
+      "triggers": {
+        "crons": []
+      },
+      "r2_buckets": [
+        {
+          "binding": "NEMWEB_BUCKET",
+          "bucket_name": "nemweb-data-prod"
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "NEMWEB_DB",
+          "database_name": "nemweb-catalog-prod",
+          "database_id": "cb7b05b5-64fb-4fad-94dc-f0566f480a36",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "vars": {
+        "DATA_FALLBACK_BASE_URL": "https://raw.githubusercontent.com/c-hat/NEMWEB/main/public",
+        "LIVE_DATA_URL": "https://raw.githubusercontent.com/c-hat/NEMWEB/live-data/today-live.json",
+        "ALLOWED_ORIGIN": "*",
+        "WORKFLOW_REF": "codex/forecaster-context"
+      }
+    }
+  }
+}
