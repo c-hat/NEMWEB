@@ -20,7 +20,9 @@ jobs:
     - name: Run Playwright tests
       env:
         NEXT_PUBLIC_DATA_SOURCE: api
-        NEXT_PUBLIC_API_BASE_URL: ${{ github.ref_name == 'architecture-docs' && 'https://nemweb-live-pinger-preview.nemwebber.workers.dev' || vars.NEMWEB_API_BASE_URL }}
+        # Pull requests run from refs/pull/*/merge, not the head branch ref. Use
+        # the permissive preview API for localhost E2E requests in every PR.
+        NEXT_PUBLIC_API_BASE_URL: ${{ (github.event_name == 'pull_request' || github.ref_name == 'architecture-docs') && 'https://nemweb-live-pinger-preview.nemwebber.workers.dev' || vars.NEMWEB_API_BASE_URL }}
       run: npm run test:e2e
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
