@@ -83,12 +83,14 @@ export default function SystemContextPanel({
     (area) => region === 'NEM' || area.region === region,
   );
   const assets = selectedAssets(context.duidScada.assets, region);
+  const changeIds = new Set((briefing?.changes ?? []).map((change) => change.eventId));
   const events = (briefing?.events ?? []).filter(
     (event) =>
-      region === 'NEM' ||
-      event.scope.id === region ||
-      event.scope.region === region ||
-      event.scope.kind === 'constraint',
+      changeIds.has(event.id) &&
+      (region === 'NEM' ||
+        event.scope.id === region ||
+        event.scope.region === region ||
+        event.scope.kind === 'constraint'),
   );
 
   return (
@@ -118,7 +120,7 @@ export default function SystemContextPanel({
           ))}
         </ul>
       ) : (
-        <p className="definition-note">No selected-region event crossed the initial materiality thresholds.</p>
+        <p className="definition-note">No selected-region change crossed the initial materiality thresholds.</p>
       )}
 
       <div className="system-metrics">

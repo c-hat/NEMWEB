@@ -440,6 +440,59 @@ def _forecast_revision_events(context: dict[str, Any], previous: dict[str, Any] 
     return events
 
 
+def _is_material_change(event: dict[str, Any], previous: dict[str, Any] | None) -> bool:
+    """Separate current system events from genuine run-to-run briefing changes."""
+    if not previous:
+        return False
+    event_type = event.get("type")
+    if event_type in ("forecast-revision", "duid-movement"):
+        return True
+
+    scope_id = (event.get("scope") or {}).get("id")
+    metrics = event.get("metrics") or {}
+    if event_type == "demand-ramp":
+        prior = (
+            ((((previous.get("regions") or {}).get(scope_id) or {}).get("operationalDemand") or {}).get("rampsMw") or {}).get("30m")
+        )
+        current = metrics.get("rampMw")
+        threshold = 500 if scope_id == "NEM" else 200
+        return (
+            not isinstance(prior, (int, float))
+            or not isinstance(current, (int, float))
+            or prior * current <= 0
+            or abs(current - prior) >= threshold
+        )
+
+    if event_type == "reserve-risk":
+        prior = ((previous.get("reserve") or {}).get("regions") or {}).get(scope_id) or {}
+        prior_lor = prior.get("worstLorCondition") or 0
+        current_lor = metrics.get("lorCondition") or 0
+        prior_reserve = prior.get("minimumSurplusReserveMw")
+        current_reserve = metrics.get("minimumSurplusReserveMw")
+        return (
+            prior_lor != current_lor
+            or not isinstance(prior_reserve, (int, float))
+            or not isinstance(current_reserve, (int, float))
+            or abs(current_reserve - prior_reserve) >= 200
+        )
+
+    if event_type == "binding-constraint":
+        prior_constraints = {
+            item.get("constraintId"): item
+            for item in ((previous.get("dispatch") or {}).get("bindingConstraints") or [])
+            if isinstance(item, dict)
+        }
+        prior = prior_constraints.get(scope_id)
+        if not prior:
+            return True
+        return (
+            abs((metrics.get("marginalValue") or 0) - (prior.get("marginalValue") or 0)) >= 5
+            or abs((metrics.get("violationDegree") or 0) - (prior.get("violationDegree") or 0)) >= 0.1
+        )
+
+    return False
+
+
 def build_briefing(context: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any]:
     events = _forecast_revision_events(context, previous)
     updated_at = context.get("updatedAt")
@@ -528,6 +581,7 @@ def build_briefing(context: dict[str, Any], previous: dict[str, Any] | None) -> 
 
     severity_order = {"critical": 0, "warning": 1, "watch": 2, "info": 3}
     events.sort(key=lambda event: severity_order.get(event["severity"], 9))
+    material_events = [event for event in events if _is_material_change(event, previous)]
     changes = [
         {
             "eventId": event["id"],
@@ -535,13 +589,14 @@ def build_briefing(context: dict[str, Any], previous: dict[str, Any] | None) -> 
             "headline": event["headline"],
             "detail": event["detail"],
         }
-        for event in events[:8]
+        for event in material_events[:8]
     ]
-    summary = (
-        f"{len(events)} active system item{'s' if len(events) != 1 else ''}; {len(changes)} shown in this briefing."
-        if events
-        else "No material changes crossed the first-release thresholds since the previous live-data run."
-    )
+    if not previous:
+        summary = f"Comparison baseline established; {len(events)} active system item{'s' if len(events) != 1 else ''}."
+    elif changes:
+        summary = f"{len(material_events)} material change{'s' if len(material_events) != 1 else ''} since the previous live-data run; {len(changes)} shown."
+    else:
+        summary = "No material changes crossed the first-release thresholds since the previous live-data run."
     return {
         "schemaVersion": "1.0.0",
         "generatedAt": updated_at,
@@ -550,4 +605,3 @@ def build_briefing(context: dict[str, Any], previous: dict[str, Any] | None) -> 
         "changes": changes,
         "events": events,
     }
-

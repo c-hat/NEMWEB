@@ -129,3 +129,23 @@ def test_reserve_ramps_and_run_to_run_briefing():
     assert "demand-ramp" in types
     assert "reserve-risk" in types
     assert briefing["comparedWith"] == "2026-08-09T01:50:00Z"
+    assert len(briefing["changes"]) == 2
+
+
+def test_first_briefing_establishes_baseline_without_claiming_changes():
+    context = {
+        "updatedAt": "2026-08-09T02:00:00Z",
+        "regions": {},
+        "currentForecast": {},
+        "reserve": {"regions": {}},
+        "dispatch": {
+            "bindingConstraints": [
+                {"constraintId": "N_TEST", "marginalValue": 12.0, "violationDegree": 0.0}
+            ]
+        },
+        "duidScada": {"assets": []},
+    }
+    briefing = fc.build_briefing(context, None)
+    assert len(briefing["events"]) == 1
+    assert briefing["changes"] == []
+    assert briefing["summary"].startswith("Comparison baseline established")
