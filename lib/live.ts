@@ -1,12 +1,12 @@
+import { getLive } from './api';
+import { USE_API_DATA } from './dataSource';
+
 /**
  * Live-data client for the in-progress trading day.
  *
- * Live actuals are published as a single JSON file on the force-pushed
- * `live-data` branch by the scheduled `live-data` GitHub Action, and read here
- * over raw.githubusercontent.com — the same trust domain as the rest of the
- * site, so it isn't blocked by corporate firewalls the way a third-party origin
- * (the old Cloudflare Worker) can be. Times are AEST (UTC+10, no DST) to match
- * AEMO, independent of the viewer's timezone.
+ * Static mode reads the live-data branch over raw.githubusercontent.com. API
+ * mode reads `GET /api/live` first and falls back to the raw URL until the
+ * Worker endpoint is proven in production.
  */
 
 /** Live-data file URL. Build-time constant; override via NEXT_PUBLIC_LIVE_DATA_URL. */
@@ -57,8 +57,17 @@ export interface LiveFile {
  * raw.githubusercontent.com's ~5-minute CDN cache, so each poll sees the latest
  * force-pushed file rather than a stale edge copy. Throws on network/HTTP error.
  */
-export async function fetchLiveFile(): Promise<LiveFile> {
+async function fetchRawLiveFile(): Promise<LiveFile> {
   const res = await fetch(`${LIVE_DATA_URL}?t=${Date.now()}`, { cache: 'no-store' });
   if (!res.ok) throw new Error(`live-data ${res.status}`);
   return (await res.json()) as LiveFile;
+}
+
+export async function fetchLiveFile(): Promise<LiveFile> {
+  if (!USE_API_DATA) return fetchRawLiveFile();
+  try {
+    return await getLive(true);
+  } catch {
+    return fetchRawLiveFile();
+  }
 }

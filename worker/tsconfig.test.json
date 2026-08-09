@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "types": ["@cloudflare/workers-types", "node"],
+    "noEmit": false,
+    "outDir": ".tmp/test-dist",
+    "incremental": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}

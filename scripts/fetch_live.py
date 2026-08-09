@@ -38,9 +38,9 @@ Output shape::
 
 Rate-limit budget (OE free tier = 500 requests/day):
   - Demand: ONE multi-region request per run (all five regions in one call).
-  - Rooftop actuals + forecasts: fetched together on runs whose minute-of-hour
-    is in {0-9, 30-39} (~every 30 min); other runs carry forward from the
-    previous file. NEMWEB is unauthenticated — no API budget concern there.
+  - Rooftop actuals + forecasts: fetched from NEMWEB on every run. NEMWEB is
+    unauthenticated, and fetching every 10 min avoids waiting until the next
+    half-hour gate when a rooftop actual ZIP is published a few minutes late.
   - Budget: exactly 1 OE request per run. The run aborts if this is exceeded.
 
 Usage::
@@ -447,6 +447,23 @@ def parse_regions(body: dict) -> dict[str, list[dict]]:
     return out
 
 
+def build_rooftop(body: dict) -> dict[str, list[dict]]:
+    """Map OE rooftop energy rows to MW points and smooth held readings.
+
+    Older live tests exercise this pure helper even though rooftop actuals now
+    come from NEMWEB. Keeping it here preserves the documented parser behavior
+    and makes it available for a future OE live adapter if needed.
+    """
+    out: dict[str, list[dict]] = {}
+    for region, points in parse_regions(body).items():
+        converted = [
+            {"ts": p["ts"], "value": None if p["value"] is None else p["value"] * 12}
+            for p in points
+        ]
+        out[region] = smooth_held(converted)
+    return out
+
+
 # --- Rooftop smoothing (for carried-forward legacy) ----------------------
 
 def _parse_ms(ts: str) -> int:
@@ -549,6 +566,12 @@ def carry_forward(prev_path: Path | None, today: str) -> tuple[dict, dict | None
     return out, forecast
 
 
+def carry_forward_rooftop(prev_path: Path | None, today: str) -> dict[str, list[dict]]:
+    """Compatibility wrapper returning only carried rooftop actuals."""
+    rooftop, _ = carry_forward(prev_path, today)
+    return rooftop
+
+
 # --- Assembly ------------------------------------------------------------
 
 def assemble(
@@ -577,8 +600,13 @@ def assemble(
 # --- CLI -----------------------------------------------------------------
 
 def _want_rooftop(minute: int, forced: bool) -> bool:
-    """Rooftop/forecast fetch gate: ~every 30 min (minute-of-hour in {0-9, 30-39})."""
-    return forced or minute < 10 or 30 <= minute < 40
+    """Rooftop/forecast fetch gate.
+
+    Kept as a helper for the CLI flag and tests, but currently always true:
+    NEMWEB is unauthenticated, and every-run fetches keep rooftop actuals fresh
+    when the interval ZIP appears just after a scheduled run.
+    """
+    return True
 
 
 def main(argv: list[str]) -> int:
