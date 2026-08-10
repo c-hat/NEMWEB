@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildNemRegion, formatIssued, REGIONS, type Metric, type RegionData } from './data';
+import {
+  buildNemRegion,
+  formatDisplayDate,
+  formatIssued,
+  REGIONS,
+  type Metric,
+  type RegionData,
+} from './data';
 
 function metric(seed: number): Metric {
   return {
@@ -48,12 +55,20 @@ describe('buildNemRegion', () => {
 
 describe('formatIssued', () => {
   it('formats issued timestamps in fixed AEST display time', () => {
-    expect(formatIssued('2026-05-27T17:00:00+10:00')).toBe(
-      '5:00pm AEST, Wed 27 May 2026',
-    );
+    expect(formatIssued('2026-05-27T17:00:00+10:00')).toBe('27/05/2026 · 17:00 AEST');
   });
 
   it('returns the original string when the timestamp is invalid', () => {
     expect(formatIssued('not-a-date')).toBe('not-a-date');
+  });
+});
+
+describe('formatDisplayDate', () => {
+  it('formats ranking dates consistently with the trading-date control', () => {
+    expect(formatDisplayDate('2026-05-27')).toBe('27/05/2026');
+  });
+
+  it('returns an unexpected value unchanged', () => {
+    expect(formatDisplayDate('not-a-date')).toBe('not-a-date');
   });
 });

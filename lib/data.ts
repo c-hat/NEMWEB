@@ -23,27 +23,32 @@ export const REGION_LABELS: Record<string, string> = {
   TAS1: 'TAS',
 };
 
+/** Format a YYYY-MM-DD trading date for the Australian UI. */
+export function formatDisplayDate(date: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) return date;
+  return `${match[3]}/${match[2]}/${match[1]}`;
+}
+
 /**
- * Format a forecast-issued ISO timestamp (always +10:00 AEST) as a readable
- * label, e.g. "2026-05-27T17:00+10:00" -> "5:00pm AEST, Wed 27 May 2026".
+ * Format a forecast-issued ISO timestamp in fixed AEST using the same numeric
+ * date convention as the trading-date control.
  */
 export function formatIssued(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   const parts = new Intl.DateTimeFormat('en-AU', {
     timeZone: 'Australia/Brisbane',
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
+    day: '2-digit',
+    month: '2-digit',
     year: 'numeric',
-    hour: 'numeric',
+    hour: '2-digit',
     minute: '2-digit',
-    hour12: true,
+    hourCycle: 'h23',
   }).formatToParts(d);
   const p: Record<string, string> = {};
   for (const part of parts) p[part.type] = part.value;
-  const ampm = (p.dayPeriod || '').toLowerCase().replace(/\s|\./g, '');
-  return `${p.hour}:${p.minute}${ampm} AEST, ${p.weekday} ${p.day} ${p.month} ${p.year}`;
+  return `${p.day}/${p.month}/${p.year} · ${p.hour}:${p.minute} AEST`;
 }
 
 /** A forecast/actual series. Missing values are null. 48 half-hour intervals. */

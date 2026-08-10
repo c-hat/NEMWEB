@@ -28,6 +28,7 @@ export function fetchRankings(): Promise<staticData.Rankings> {
 
 export {
   buildNemRegion,
+  formatDisplayDate,
   formatIssued,
   REGION_LABELS,
   REGIONS,

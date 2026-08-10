@@ -12,4 +12,15 @@ test('renders the forecast tracker from the configured data source', async ({ pa
   await expect(
     page.getByRole('region', { name: /NEM forecast error decomposition chart/i }),
   ).toBeVisible();
+
+  const firstRankedDay = page.locator('#errors-select option').nth(1);
+  await expect(firstRankedDay).toHaveText(/^1\. \d{2}\/\d{2}\/\d{4} · [\d,]+ MW avg$/);
+  const rankedDate = await firstRankedDay.getAttribute('value');
+  expect(rankedDate).not.toBeNull();
+
+  await page.locator('#errors-select').selectOption(rankedDate!);
+  await expect(page.locator('#date-select')).toHaveValue(rankedDate!);
+  await expect(page.locator('.forecast-issued')).toHaveText(
+    /^Forecast issued\d{2}\/\d{2}\/\d{4} · \d{2}:\d{2} AEST$/,
+  );
 });
