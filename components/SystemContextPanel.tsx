@@ -35,6 +35,17 @@ function hhmm(value: string | null | undefined): string {
   }).format(parsed);
 }
 
+function ageFrom(value: string | null | undefined, reference: string): string {
+  if (!value) return 'observation time unavailable';
+  const ageMinutes = Math.max(0, Math.round((Date.parse(reference) - Date.parse(value)) / 60_000));
+  if (!Number.isFinite(ageMinutes)) return 'observation age unavailable';
+  if (ageMinutes < 2) return 'current with context';
+  if (ageMinutes < 60) return `${ageMinutes} min behind context`;
+  const hours = Math.floor(ageMinutes / 60);
+  const minutes = ageMinutes % 60;
+  return `${hours} h${minutes ? ` ${minutes} min` : ''} behind context`;
+}
+
 function latestAreaValue(area: RooftopArea): number | null {
   for (let i = area.actual.length - 1; i >= 0; i--) {
     if (area.actual[i].value != null) return area.actual[i].value;
@@ -146,7 +157,7 @@ export default function SystemContextPanel({ context, briefing, region, stale }:
         <div><span>30-minute residual change</span><strong>{fmtMw(meteorology.residualDemand.rampsMw['30m'], true)}</strong></div>
       </div>
       <p className="definition-note timing-note">
-        Total solar combines the latest half-hour rooftop estimate with five-minute utility SCADA; component times are shown where they differ.
+        Rooftop PV ends at {hhmm(meteorology.solar.rooftopObservedAt)} AEST ({ageFrom(meteorology.solar.rooftopObservedAt, context.updatedAt)}); utility SCADA ends at {hhmm(meteorology.solar.utilityObservedAt)} AEST ({ageFrom(meteorology.solar.utilityObservedAt, context.updatedAt)}). Rooftop PV is not carried forward to the utility timestamp.
       </p>
 
       <SolarResidualCharts data={meteorology} />

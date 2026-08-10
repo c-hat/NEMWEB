@@ -938,7 +938,7 @@ def main(argv: list[str]) -> int:
             today,
         )
         system_context = {
-            "schemaVersion": "1.1.0",
+            "schemaVersion": "1.2.0",
             "updatedAt": updated_at,
             "tradingDate": today,
             "sources": sources,

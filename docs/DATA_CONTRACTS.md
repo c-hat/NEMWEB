@@ -267,6 +267,11 @@ Semantic rules:
 - Estimated total solar is the latest rooftop PV estimate plus aggregated
   utility-scale solar DUID SCADA. Component observation times remain explicit
   because the rooftop and SCADA cadences differ.
+- The observed solar chart series is anchored to native rooftop-PV interval
+  timestamps. A utility-SCADA value at or shortly before that interval may be
+  used for the co-timed total and is identified by `utilityObservedAt`.
+  Rooftop-PV values are never copied onto later five-minute SCADA timestamps;
+  the independent utility-solar line comes from `utilitySolar.series`.
 - Residual demand is operational demand less utility-scale solar. Its forecast
   uses operational-demand POE50 less regional PDPASA solar UIGF.
 - `solar UIGF - cleared MW` is a dispatch gap. It must not be labelled

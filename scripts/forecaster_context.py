@@ -537,22 +537,27 @@ def build_meteorological_context(
 
         solar_series: list[dict[str, Any]] = []
         residual_series: list[dict[str, Any]] = []
-        for utility_point in utility_series:
-            target = datetime.fromisoformat(utility_point["ts"])
-            # CURRENT rooftop estimates can publish close to one interval late;
-            # keep the component timestamp visible and allow one interval plus
-            # publication lag when building the combined operational series.
-            rooftop_point = _point_at_or_before(rooftop_points, target, 70)
-            demand_point = _point_at_or_before(demand_points, target, 15)
-            if rooftop_point:
+        # Anchor the combined series to the native half-hour rooftop intervals.
+        # Utility SCADA may be matched at, or shortly before, that interval but
+        # rooftop values must never be copied onto newer five-minute timestamps.
+        # Doing so makes a delayed estimate look current in the browser.
+        for rooftop_point in rooftop_points:
+            target = datetime.fromisoformat(rooftop_point["ts"])
+            utility_point = _point_at_or_before(utility_series, target, 10)
+            if utility_point:
                 solar_series.append(
                     {
-                        "ts": utility_point["ts"],
+                        "ts": rooftop_point["ts"],
                         "rooftopPvMw": round(float(rooftop_point["value"]), 1),
                         "utilitySolarMw": utility_point["value"],
+                        "utilityObservedAt": utility_point["ts"],
                         "totalSolarMw": round(float(rooftop_point["value"]) + utility_point["value"], 1),
                     }
                 )
+
+        for utility_point in utility_series:
+            target = datetime.fromisoformat(utility_point["ts"])
+            demand_point = _point_at_or_before(demand_points, target, 15)
             if demand_point:
                 residual_series.append(
                     {
@@ -900,7 +905,7 @@ def build_briefing(context: dict[str, Any], previous: dict[str, Any] | None) -> 
     else:
         summary = "No material meteorological or system-consequence changes crossed the first-release thresholds since the previous run."
     return {
-        "schemaVersion": "1.1.0",
+        "schemaVersion": "1.2.0",
         "generatedAt": updated_at,
         "comparedWith": (previous or {}).get("updatedAt"),
         "summary": summary,

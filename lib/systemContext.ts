@@ -105,6 +105,7 @@ export interface MeteorologicalRegion {
       ts: string;
       rooftopPvMw: number;
       utilitySolarMw: number;
+      utilityObservedAt: string;
       totalSolarMw: number;
     }>;
   };

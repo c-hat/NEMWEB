@@ -55,7 +55,7 @@ const context = {
           utilityDeltaMw: -100,
           totalEstimateMw: 3200,
           rampsMw: { '30m': -250, '60m': -400 },
-          series: [{ ts, rooftopPvMw: 1200, utilitySolarMw: 2000, totalSolarMw: 3200 }],
+          series: [{ ts, rooftopPvMw: 1200, utilitySolarMw: 2000, utilityObservedAt: ts, totalSolarMw: 3200 }],
         },
         residualDemand: {
           currentMw: 6000,
@@ -93,5 +93,7 @@ describe('SystemContextPanel', () => {
     expect(screen.getByText('SOLAR1')).toBeInTheDocument();
     expect(screen.queryByText('GAS1')).not.toBeInTheDocument();
     expect(screen.getByText('Reserve and system response')).toBeInTheDocument();
+    expect(screen.getByText(/Rooftop PV ends at 12:00 AEST/)).toBeInTheDocument();
+    expect(screen.getByText(/Rooftop PV is not carried forward/)).toBeInTheDocument();
   });
 });

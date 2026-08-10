@@ -41,6 +41,9 @@ function chartRows(data: MeteorologicalRegion) {
     return value;
   };
   for (const point of data.solar.series) Object.assign(row(point.ts), point);
+  for (const point of data.utilitySolar.series) {
+    Object.assign(row(point.ts), { utilitySolarMw: point.value });
+  }
   for (const point of data.residualDemand.series) Object.assign(row(point.ts), point);
   for (const point of data.forecast) {
     Object.assign(row(point.ts), {
@@ -102,7 +105,7 @@ export default function SolarResidualCharts({ data }: Props) {
     <div className="meteorology-charts">
       <section className="meteorology-chart" aria-label="Solar generation components chart">
         <h3>Solar generation</h3>
-        <p className="definition-note">Rooftop estimates plus utility-scale SCADA; dashed line is the combined forecast.</p>
+        <p className="definition-note">Rooftop estimates end at their native observation time; utility-scale SCADA continues independently. The dashed line is the combined forecast.</p>
         <div className="meteorology-chart-body">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={rows} margin={{ top: 10, right: 14, bottom: 4, left: 4 }}>
@@ -111,8 +114,8 @@ export default function SolarResidualCharts({ data }: Props) {
               <ValueAxis />
               <Tooltip content={<ChartTooltip />} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Line name="Total solar estimate" dataKey="totalSolarMw" stroke="#c0552d" strokeWidth={2.2} dot={false} isAnimationActive={false} />
-              <Line name="Rooftop PV" dataKey="rooftopPvMw" stroke="#d29d42" strokeWidth={1.3} dot={false} isAnimationActive={false} />
+              <Line name="Total solar estimate" dataKey="totalSolarMw" stroke="#c0552d" strokeWidth={2.2} dot={false} connectNulls isAnimationActive={false} />
+              <Line name="Rooftop PV" dataKey="rooftopPvMw" stroke="#d29d42" strokeWidth={1.3} dot={false} connectNulls isAnimationActive={false} />
               <Line name="Utility solar" dataKey="utilitySolarMw" stroke="#4b6f73" strokeWidth={1.3} dot={false} isAnimationActive={false} />
               <Line name="Total solar forecast" dataKey="forecastTotalSolarMw" stroke="#c0552d" strokeDasharray="5 4" strokeWidth={1.6} dot={false} isAnimationActive={false} />
             </LineChart>

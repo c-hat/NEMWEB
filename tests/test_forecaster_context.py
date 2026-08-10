@@ -175,6 +175,13 @@ def test_reserve_ramps_and_run_to_run_briefing():
     vic = meteorology["regions"]["VIC1"]
     assert vic["solar"]["totalEstimateMw"] == 1400
     assert vic["solar"]["rampsMw"]["30m"] == -100
+    assert vic["solar"]["series"][-1] == {
+        "ts": "2026-08-09T12:00:00+10:00",
+        "rooftopPvMw": 800.0,
+        "utilitySolarMw": 600.0,
+        "utilityObservedAt": "2026-08-09T12:00:00+10:00",
+        "totalSolarMw": 1400.0,
+    }
     assert vic["residualDemand"]["currentMw"] == 4800
     assert vic["residualDemand"]["rampsMw"]["30m"] == 300
     assert vic["forecast"][0]["totalSolarMw"] == 900
@@ -196,6 +203,47 @@ def test_reserve_ramps_and_run_to_run_briefing():
     assert "reserve-risk" in types
     assert briefing["comparedWith"] == "2026-08-09T01:50:00Z"
     assert len(briefing["changes"]) == 3
+
+
+def test_solar_series_does_not_carry_rooftop_to_newer_scada_timestamp():
+    meteorology = fc.build_meteorological_context(
+        {"VIC1": [{"ts": "2026-08-09T12:30:00+10:00", "value": 5400}]},
+        {"VIC1": [{"ts": "2026-08-09T11:30:00+10:00", "value": 1000}]},
+        {
+            "observedAt": "2026-08-09T12:30:00+10:00",
+            "assets": [
+                {
+                    "duid": "SOLAR1",
+                    "region": "VIC1",
+                    "fueltech": "solar_utility",
+                    "currentMw": 650,
+                    "deltaMw": 50,
+                }
+            ],
+        },
+        {},
+        {"regions": {}},
+        {
+            "meteorologicalContext": {
+                "regions": {
+                    "VIC1": {
+                        "utilitySolar": {
+                            "series": [{"ts": "2026-08-09T11:30:00+10:00", "value": 600}]
+                        },
+                        "wind": {"series": []},
+                    }
+                }
+            }
+        },
+        "2026-08-09",
+    )
+
+    vic = meteorology["regions"]["VIC1"]
+    assert [point["ts"] for point in vic["solar"]["series"]] == [
+        "2026-08-09T11:30:00+10:00"
+    ]
+    assert vic["solar"]["series"][0]["rooftopPvMw"] == 1000.0
+    assert vic["utilitySolar"]["series"][-1]["ts"] == "2026-08-09T12:30:00+10:00"
 
 
 def test_first_briefing_establishes_baseline_without_claiming_changes():
