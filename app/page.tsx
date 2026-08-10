@@ -12,6 +12,7 @@ import {
   fetchLatest,
   fetchRankings,
   fetchToday,
+  formatDisplayDate,
   formatIssued,
   REGION_LABELS,
   SELECTABLE_REGIONS,
@@ -351,7 +352,7 @@ export default function Home() {
             </option>
             {rankingList.map((e, i) => (
               <option key={e.date} value={e.date}>
-                {`${i + 1}. ${e.date} · ${Math.round(e.maeMw).toLocaleString('en-AU')} MW avg`}
+                {`${i + 1}. ${formatDisplayDate(e.date)} · ${Math.round(e.maeMw).toLocaleString('en-AU')} MW avg`}
               </option>
             ))}
           </select>
@@ -372,8 +373,9 @@ export default function Home() {
       </section>
 
       {activeView === 'forecast' && day && day.forecastIssuedAt && (
-        <p className="context">
-          <strong>Forecast issued:</strong> {formatIssued(day.forecastIssuedAt)}
+        <p className="forecast-issued" aria-label={`Forecast issued ${formatIssued(day.forecastIssuedAt)}`}>
+          <span>Forecast issued</span>
+          <strong>{formatIssued(day.forecastIssuedAt)}</strong>
         </p>
       )}
 

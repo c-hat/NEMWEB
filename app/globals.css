@@ -265,6 +265,30 @@ body {
   font-weight: 500;
 }
 
+.forecast-issued {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 14px 0 0;
+  padding: 7px 10px;
+  border-left: 3px solid var(--accent);
+  background: rgba(192, 85, 45, 0.06);
+  color: var(--accent);
+}
+
+.forecast-issued span {
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.forecast-issued strong {
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 500;
+}
+
 .charts {
   display: grid;
   grid-template-columns: 1fr;
