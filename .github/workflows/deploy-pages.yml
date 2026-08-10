@@ -25,9 +25,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # For workflow_run (after ingest) only deploy if the ingest succeeded.
-    # push/workflow_dispatch carry no workflow_run payload, so they always run.
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    # Always redeploy the tip of main after an ingest run finishes. The ingest
+    # commits generated data before its independent Cloudflare publication
+    # step, so a later R2/D1 failure must not suppress the GitHub Pages refresh.
+    # If ingest failed before committing, this is a harmless redeploy of the
+    # existing main tip.
     steps:
       - uses: actions/checkout@v4
         with:
