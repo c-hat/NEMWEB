@@ -8,9 +8,10 @@ describe('ForecastErrorChart', () => {
     render(<ForecastErrorChart regions={fixtureDayData.regions} region="NSW1" />);
 
     expect(
-      screen.getByRole('region', { name: 'NSW forecast error decomposition chart' }),
+      screen.getByRole('region', { name: 'NSW demand and rooftop forecast error comparison chart' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('NSW — Forecast Error')).toBeInTheDocument();
+    expect(screen.getByText('NSW — Demand & Rooftop Error')).toBeInTheDocument();
+    expect(screen.getByText(/without attributing a cause/i)).toBeInTheDocument();
   });
 
   it('renders an empty state when no complete intervals exist', () => {
@@ -33,12 +34,12 @@ describe('ForecastErrorChart', () => {
   it('renders regional and NEM chart regions', () => {
     const { rerender } = render(<ForecastErrorChart regions={fixtureDayData.regions} region="VIC1" />);
     expect(
-      screen.getByRole('region', { name: 'VIC forecast error decomposition chart' }),
+      screen.getByRole('region', { name: 'VIC demand and rooftop forecast error comparison chart' }),
     ).toBeInTheDocument();
 
     rerender(<ForecastErrorChart regions={fixtureDayData.regions} region="NEM" />);
     expect(
-      screen.getByRole('region', { name: 'NEM forecast error decomposition chart' }),
+      screen.getByRole('region', { name: 'NEM demand and rooftop forecast error comparison chart' }),
     ).toBeInTheDocument();
   });
 });

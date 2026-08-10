@@ -42,8 +42,15 @@ function fmt(v: number): string {
   return Math.round(v).toLocaleString('en-AU');
 }
 
-function fmtPct(v: number | null): string {
-  return v == null ? '—' : `${Math.round(v)}%`;
+function fmtSigned(v: number): string {
+  return `${v > 0 ? '+' : ''}${fmt(v)}`;
+}
+
+function relationshipLabel(value: ForecastErrorPoint['rooftopRelationship']): string {
+  if (value === 'same-direction') return 'Same direction';
+  if (value === 'opposite-direction') return 'Opposite direction';
+  if (value === 'no-demand-error') return 'Demand error is zero';
+  return 'No rooftop error signal';
 }
 
 interface TooltipPayloadItem {
@@ -64,15 +71,23 @@ function ChartTooltip({ active, payload }: ChartTooltipProps) {
       <div className="tt-time">{point.time}</div>
       <div className="tt-row">
         <span>Demand error</span>
-        <span>{fmt(point.demandError)} MW</span>
+        <span>{fmtSigned(point.demandError)} MW</span>
       </div>
       <div className="tt-row">
-        <span>Rooftop PV error</span>
-        <span>{fmt(point.rooftopContribution)} MW</span>
+        <span>Rooftop error signal</span>
+        <span>{fmtSigned(point.rooftopErrorSignal)} MW</span>
       </div>
       <div className="tt-row">
-        <span>Rooftop explained</span>
-        <span>{fmtPct(point.rooftopExplainedPct)}</span>
+        <span>Relative magnitude</span>
+        <span>
+          {point.rooftopRelativeMagnitudePct == null
+            ? '—'
+            : `${Math.round(point.rooftopRelativeMagnitudePct)}% of demand`}
+        </span>
+      </div>
+      <div className="tt-row">
+        <span>Relationship</span>
+        <span>{relationshipLabel(point.rooftopRelationship)}</span>
       </div>
     </div>
   );
@@ -90,13 +105,16 @@ export default function ForecastErrorChart({
     <div
       className="chart-card forecast-error-card"
       role="region"
-      aria-label={`${REGION_LABELS[region]} forecast error decomposition chart`}
+      aria-label={`${REGION_LABELS[region]} demand and rooftop forecast error comparison chart`}
     >
       <h3>
         <span className="chart-title">
-          {REGION_LABELS[region]} — Forecast Error <span className="chart-unit">MW</span>
+          {REGION_LABELS[region]} — Demand &amp; Rooftop Error <span className="chart-unit">MW</span>
         </span>
       </h3>
+      <p className="forecast-error-note">
+        Rooftop error signal = forecast minus actual rooftop PV. It compares the solar miss with the demand error without attributing a cause; relative magnitude can exceed 100% when other influences offset it.
+      </p>
 
       {points.length === 0 && <p className="status">No chart data available.</p>}
       <div className="chart-body">
@@ -151,10 +169,11 @@ export default function ForecastErrorChart({
             />
             <Line
               type="monotone"
-              dataKey="rooftopContribution"
-              name="Rooftop PV error"
+              dataKey="rooftopErrorSignal"
+              name="Rooftop error signal"
               stroke={ROOFTOP_COLOR}
               strokeWidth={1.5}
+              strokeDasharray="5 3"
               dot={false}
               isAnimationActive={false}
             />

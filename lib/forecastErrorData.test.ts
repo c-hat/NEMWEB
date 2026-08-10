@@ -43,7 +43,7 @@ function regionsWith(factory: (index: number) => RegionData) {
 }
 
 describe('buildForecastErrorData', () => {
-  it('computes demand error, rooftop contribution, and residual', () => {
+  it('computes demand error and the directional rooftop error signal', () => {
     const result = buildForecastErrorData({
       regions: regionsWith(() => regionData()),
       region: 'NSW1',
@@ -51,8 +51,9 @@ describe('buildForecastErrorData', () => {
 
     expect(result.points[0]).toMatchObject({
       demandError: 12,
-      rooftopContribution: 6,
-      residual: 6,
+      rooftopErrorSignal: 6,
+      rooftopRelativeMagnitudePct: 50,
+      rooftopRelationship: 'same-direction',
     });
   });
 
@@ -84,11 +85,11 @@ describe('buildForecastErrorData', () => {
     const result = buildForecastErrorData({ regions, region: 'NEM' });
 
     expect(result.points[0].demandError).toBe(25);
-    expect(result.points[0].rooftopContribution).toBe(-10);
-    expect(result.points[0].residual).toBe(35);
+    expect(result.points[0].rooftopErrorSignal).toBe(-10);
+    expect(result.points[0].rooftopRelationship).toBe('opposite-direction');
   });
 
-  it('returns null interval explained percentage when demand error is zero', () => {
+  it('returns no relative magnitude when demand error is zero', () => {
     const regions = regionsWith(() => ({
       demand: metric({
         poe10: [130, 140, 150],
@@ -106,7 +107,35 @@ describe('buildForecastErrorData', () => {
 
     const result = buildForecastErrorData({ regions, region: 'NSW1' });
 
-    expect(result.points.map((point) => point.rooftopExplainedPct)).toEqual([null, null, null]);
+    expect(result.points.map((point) => point.rooftopRelativeMagnitudePct)).toEqual([null, null, null]);
+    expect(result.points.map((point) => point.rooftopRelationship)).toEqual([
+      'no-demand-error',
+      'no-demand-error',
+      'no-demand-error',
+    ]);
+  });
+
+  it('allows a rooftop signal above 100% when other influences offset it', () => {
+    const regions = regionsWith(() => ({
+      demand: metric({
+        poe10: [130, 140, 150],
+        poe50: [100, 110, 120],
+        poe90: [70, 80, 90],
+        actual: [110, 120, 130],
+      }),
+      rooftopPv: metric({
+        poe10: [45, 55, 65],
+        poe50: [40, 50, 60],
+        poe90: [35, 45, 55],
+        actual: [25, 35, 45],
+      }),
+    }));
+
+    const result = buildForecastErrorData({ regions, region: 'NSW1' });
+
+    expect(result.points[0].rooftopErrorSignal).toBe(15);
+    expect(result.points[0].rooftopRelativeMagnitudePct).toBe(150);
+    expect(result.points[0].rooftopRelationship).toBe('same-direction');
   });
 
   it('aligns 5-minute demand actuals to the latest point at or before each interval end', () => {
@@ -130,7 +159,7 @@ describe('buildForecastErrorData', () => {
       liveRegions,
     });
 
-    expect(result.points.map((point) => [point.time, point.demandError, point.rooftopContribution])).toEqual([
+    expect(result.points.map((point) => [point.time, point.demandError, point.rooftopErrorSignal])).toEqual([
       ['00:30', 11, 2],
       ['01:00', 8, 5],
     ]);

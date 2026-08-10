@@ -269,11 +269,12 @@ body {
   display: inline-flex;
   align-items: baseline;
   gap: 10px;
+  flex-wrap: wrap;
   margin: 14px 0 0;
   padding: 7px 10px;
-  border-left: 3px solid var(--accent);
-  background: rgba(192, 85, 45, 0.06);
-  color: var(--accent);
+  border-left: 3px solid var(--ink);
+  background: rgba(58, 56, 51, 0.05);
+  color: var(--ink);
 }
 
 .forecast-issued span {
@@ -287,6 +288,11 @@ body {
   font-family: var(--font-mono);
   font-size: 0.86rem;
   font-weight: 500;
+}
+
+.forecast-issued small {
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 
 .charts {
@@ -373,6 +379,13 @@ body {
   height: 340px;
 }
 
+.forecast-error-note {
+  margin: 1px 4px 4px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
 .chart-tooltip {
   width: 180px;
   padding: 7px 9px;
@@ -407,7 +420,7 @@ body {
 }
 
 .forecast-error-tooltip {
-  width: 204px;
+  width: 260px;
 }
 
 .caveat {

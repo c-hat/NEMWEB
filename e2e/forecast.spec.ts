@@ -10,7 +10,7 @@ test('renders the forecast tracker from the configured data source', async ({ pa
   await expect(page.getByRole('region', { name: /NEM — Demand forecast chart/i })).toBeVisible();
   await expect(page.getByRole('region', { name: /NEM — Rooftop PV forecast chart/i })).toBeVisible();
   await expect(
-    page.getByRole('region', { name: /NEM forecast error decomposition chart/i }),
+    page.getByRole('region', { name: /NEM demand and rooftop forecast error comparison chart/i }),
   ).toBeVisible();
 
   const firstRankedDay = page.locator('#errors-select option').nth(1);
@@ -21,6 +21,6 @@ test('renders the forecast tracker from the configured data source', async ({ pa
   await page.locator('#errors-select').selectOption(rankedDate!);
   await expect(page.locator('#date-select')).toHaveValue(rankedDate!);
   await expect(page.locator('.forecast-issued')).toHaveText(
-    /^Forecast issued\d{2}\/\d{2}\/\d{4} · \d{2}:\d{2} AEST$/,
+    /^Day-ahead POE forecast issued\d{2}\/\d{2}\/\d{4} · \d{2}:\d{2} AESTPOE50 line · POE10–POE90 band$/,
   );
 });

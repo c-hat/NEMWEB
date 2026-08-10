@@ -8,12 +8,12 @@ export interface ForecastErrorPoint {
   interval: string;
   /** actual demand - day-ahead POE50 demand forecast. */
   demandError: number;
-  /** Negative rooftop error: forecast rooftop - actual rooftop. */
-  rooftopContribution: number;
-  /** Demand error not explained by rooftop forecast miss. */
-  residual: number;
-  /** Interval-level rooftop-explained percentage, null when demand error is zero. */
-  rooftopExplainedPct: number | null;
+  /** Forecast rooftop PV - actual rooftop PV: expected demand-error direction, all else equal. */
+  rooftopErrorSignal: number;
+  /** Absolute rooftop signal as a percentage of absolute demand error; may exceed 100%. */
+  rooftopRelativeMagnitudePct: number | null;
+  /** Whether the rooftop signal points in the same or opposite direction as demand error. */
+  rooftopRelationship: 'same-direction' | 'opposite-direction' | 'no-demand-error' | 'no-rooftop-error';
 }
 
 export interface ForecastErrorResult {
@@ -93,10 +93,21 @@ function actualAt(
   return liveRegionValueForInterval(liveRegions, region, liveMetric, Date.parse(intervalIso));
 }
 
-function intervalExplainedPct(demandError: number, residual: number): number | null {
+function relativeMagnitudePct(demandError: number, rooftopErrorSignal: number): number | null {
   const denom = Math.abs(demandError);
   if (denom === 0) return null;
-  return Math.max(0, 1 - Math.abs(residual) / denom) * 100;
+  return (Math.abs(rooftopErrorSignal) / denom) * 100;
+}
+
+function rooftopRelationship(
+  demandError: number,
+  rooftopErrorSignal: number,
+): ForecastErrorPoint['rooftopRelationship'] {
+  if (demandError === 0) return 'no-demand-error';
+  if (rooftopErrorSignal === 0) return 'no-rooftop-error';
+  return Math.sign(demandError) === Math.sign(rooftopErrorSignal)
+    ? 'same-direction'
+    : 'opposite-direction';
 }
 
 export function buildForecastErrorData({
@@ -144,8 +155,7 @@ export function buildForecastErrorData({
     }
 
     const demandError = actualDemand - forecastDemand;
-    const rooftopContribution = -(actualRooftop - forecastRooftop);
-    const residual = demandError - rooftopContribution;
+    const rooftopErrorSignal = forecastRooftop - actualRooftop;
     const t = minutesSinceStart(dayStartMs, interval);
 
     points.push({
@@ -153,9 +163,9 @@ export function buildForecastErrorData({
       time: minuteLabel(t),
       interval,
       demandError,
-      rooftopContribution,
-      residual,
-      rooftopExplainedPct: intervalExplainedPct(demandError, residual),
+      rooftopErrorSignal,
+      rooftopRelativeMagnitudePct: relativeMagnitudePct(demandError, rooftopErrorSignal),
+      rooftopRelationship: rooftopRelationship(demandError, rooftopErrorSignal),
     });
   }
 
@@ -169,7 +179,7 @@ export function forecastErrorYScale(points: ForecastErrorPoint[]): {
 } {
   const values = [0];
   for (const point of points) {
-    values.push(point.demandError, point.rooftopContribution);
+    values.push(point.demandError, point.rooftopErrorSignal);
   }
 
   const maxAbs = Math.max(...values.map((value) => Math.abs(value)));

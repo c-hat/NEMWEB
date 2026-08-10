@@ -373,9 +373,13 @@ export default function Home() {
       </section>
 
       {activeView === 'forecast' && day && day.forecastIssuedAt && (
-        <p className="forecast-issued" aria-label={`Forecast issued ${formatIssued(day.forecastIssuedAt)}`}>
-          <span>Forecast issued</span>
+        <p
+          className="forecast-issued"
+          aria-label={`Day-ahead POE forecast issued ${formatIssued(day.forecastIssuedAt)}; POE50 line and POE10 to POE90 band`}
+        >
+          <span>Day-ahead POE forecast issued</span>
           <strong>{formatIssued(day.forecastIssuedAt)}</strong>
+          <small>POE50 line · POE10–POE90 band</small>
         </p>
       )}
 
